@@ -107,13 +107,14 @@ def make_bipolar(raw):
     return mne.set_bipolar_reference(raw, **bp_args), bp_args.get('ch_name')
 
 
-def resting_state(raw_epochs, fs):
+def resting_state(raw_epochs):
 
     for band, limits in FREQ_BANDS.items():
 
         con = spectral_connectivity_epochs(raw_epochs,
                                          #n_cycles=4, freqs=freqs,
-                                         method=METRICS, sfreq=fs, mode='multitaper',
+                                         method=METRICS, sfreq=raw_epochs.info.get('sfreq'),
+                                         mode='multitaper',
                                          fmin=limits[0], fmax=limits[1],
                                          n_jobs=1,
                                          faverage=True)
@@ -141,7 +142,7 @@ def run():
 
     raw_epochs = mne.make_fixed_length_epochs(raw_bipolar, duration=20, overlap=10, verbose=False)
 
-    resting_state(raw_epochs, raw.info['sfreq'])
+    resting_state(raw_epochs)
 
 
 
