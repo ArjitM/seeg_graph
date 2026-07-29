@@ -26,15 +26,18 @@ __version__ = "2026-July-21"
 
 import numpy as np
 import mne
-from mne_connectivity import spectral_connectivity_epochs
+from mne_connectivity import spectral_connectivity_epochs, spectral_connectivity_time, phase_slope_index_time
 from mne.preprocessing import ICA
 import re
 import sys
 import shlex
+import argparse
+import json
+import ast
 from fooof import FOOOF
 
 UTILITY_FREQ = 60  # all recordings in the US, 60hz utility
-METRICS = ['plv', 'wpli2_debiased', 'dpli']
+METRICS = ['plv', 'wpli'] #'dpli', 'wpli2_debiased', ]# 'dpli']
 
 # Beta split into low and high bands as this may differ in cortico-cortico and cortico-thalamic circuits, in particular
 # w.r.t. directed connectivity measures
@@ -49,14 +52,14 @@ FREQ_BANDS = {
     'beta2': [18, 30],
     'gamma1': [30, 58],
     'gamma2': [62, 118],
-    'gamma3': [122, 178],
+    'gamma3': [122, 150],
 }
 
 
 ### ======================= DO NOT EDIT BELOW THIS LINE ======================= ###
 
 
-def make_bipolar(raw):
+def make_bipolar(raw: mne.io.BaseRaw):
 
     # can handle space or no space prior to contact name, but expects LEAD<CONTACT_NUM> format
     c_id = [(c, c.split(' ')[-1]) for c in raw.copy().pick(picks='eeg').ch_names]
@@ -107,23 +110,122 @@ def make_bipolar(raw):
     return mne.set_bipolar_reference(raw, **bp_args), bp_args.get('ch_name')
 
 
-def resting_state(raw_epochs):
+def resting_state(raw_epochs: mne.Epochs):
+
+    results_cache = {band: dict() for band in FREQ_BANDS.keys()}
 
     for band, limits in FREQ_BANDS.items():
 
-        con = spectral_connectivity_epochs(raw_epochs,
-                                         #n_cycles=4, freqs=freqs,
-                                         method=METRICS, sfreq=raw_epochs.info.get('sfreq'),
+        freqs = np.logspace(np.log10(limits[0]), np.log10(limits[1]), num=10)
+        con = spectral_connectivity_time(raw_epochs,
+                                         n_cycles=8,
+                                         freqs=freqs,
+                                         method=METRICS,
+                                         sfreq=raw_epochs.info.get('sfreq'),
                                          mode='multitaper',
                                          fmin=limits[0], fmax=limits[1],
                                          n_jobs=1,
+                                         average=True,
                                          faverage=True)
 
-        for i, xx in enumerate(con):  # expect an array of matrices, each [m x m x 1] where m is number of contacts.
-            synch = xx.get_data(output='dense')
-            synch = synch.reshape(synch.shape[:2])  # [m x m x 1] -> [m x m]
-            np.save(EDF_INPUT.replace(".edf", f"_synchrony_{band}_{METRICS[i]}.npy"), synch)
+        eff = phase_slope_index_time(raw_epochs,
+                                     freqs=freqs,
+                                     fmin=limits[0], fmax=limits[1],
+                                     sfreq=raw_epochs.info.get('sfreq'),
+                                     mode='cwt_morlet',
+                                     average=True,
+                                     n_cycles=8)
 
+        for i, result in enumerate(con):  # expect an array of [m x m x 1] matrices, where m = # of contacts
+            synch = result.get_data(output='dense')
+            synch = synch.squeeze(axis=-1)  # [m x m x 1] -> [m x m]
+            # np.save(EDF_INPUT.replace(".edf", f"_synchrony_{band}_{METRICS[i]}.npy"), synch)
+            results_cache[band][METRICS[i]] = synch
+
+        results_cache[band]['psi'] = eff.get_data(output='dense').squeeze(axis=-1)
+
+    return  results_cache
+
+
+def event_based(signal: mne.io.BaseRaw):
+    """
+    Functional and effective connectivity for one event/time series
+    :param signal:
+    :return:
+    """
+    results_cache = {band: dict() for band in FREQ_BANDS.keys()}
+
+    for band, limits in FREQ_BANDS.items():
+
+        freqs = np.logspace(np.log10(limits[0]), np.log10(limits[1]), num=10)
+
+        # process as a single epoch
+        con = spectral_connectivity_time(np.array([signal.get_data()]),
+                                         method=METRICS, sfreq=signal.info.get('sfreq'),
+                                         mode='cwt_morlet',
+                                         # decim=20,
+                                         freqs=freqs,
+                                         fmin=limits[0], fmax=limits[1],
+                                         n_cycles=8,
+                                         average=True,
+                                         faverage=True)
+
+        eff = phase_slope_index_time(np.array([signal.get_data()]),
+                                     freqs=freqs,
+                                     fmin=limits[0], fmax=limits[1],
+                                     sfreq=signal.info.get('sfreq'),
+                                     mode='cwt_morlet',
+                                     average=True,
+                                     n_cycles=8)
+
+        for i, result in enumerate(con):
+            synch = result.get_data(output='dense')
+            synch = synch.squeeze(axis=-1)  # [m x m x 1] -> [m x m]
+            results_cache[band][METRICS[i]] = synch
+
+        results_cache[band]['psi'] = eff.get_data(output='dense').squeeze(axis=-1)
+
+    return results_cache
+
+
+def time_locked_events(signals):
+    """
+    Method to characterize a prototypical time-locked event (e.g. seizure) from several individual replicates.
+    Functional and effective connectivity averaged across events.
+    :param signals: list or numpy array of mne Raw signals OR instance of mne Epochs representing individual seizures
+    where t=0 is epileptologist-labeled seizure onset time.
+    :return: time-locked, inter-epoch averaged functional/effective connectivity measures
+    """
+    return
+
+
+
+def ictal(raw: mne.io.BaseRaw):
+
+    with open(EDF_INPUT.replace('.edf', '.json'), 'r', encoding='utf-8') as ff:
+        annttns = json.load(ff)
+
+    task = annttns.get("TaskDescription", None)
+
+    if task is not None:
+        sz = float(re.search(r"sz_onset_time_s:\s*([\d.]+)", task).group(1))
+
+        ioz = ast.literal_eval(
+            re.search(r"IOZ:\s*(\[.*\])", task).group(1)
+        )
+
+    else:
+        return
+
+    ### logic for processing pre-/post-/ictal
+    preictal_signal = raw.copy().crop(tmin=0.0, tmax=sz)
+    ictal_signal = raw.copy().crop(tmin=sz, reset_first_samp=True)
+
+    RC = event_based(preictal_signal)
+
+    # np.save(EDF_INPUT.replace(".edf", ".npy"), RC)
+    with open(EDF_INPUT.replace('.edf', '_connectivity.json'), 'w', encoding='utf-8') as ff:
+        json.dump(RC, ff, indent=4)
 
 
 def run():
@@ -142,15 +244,23 @@ def run():
 
     raw_epochs = mne.make_fixed_length_epochs(raw_bipolar, duration=20, overlap=10, verbose=False)
 
-    resting_state(raw_epochs)
-
+    # resting_state(raw_epochs)
+    ictal(raw_bipolar)
 
 
 
 if __name__ == '__main__':
-    xx = sys.argv[1]
-    print(xx)
-    EDF_INPUT = " ".join(shlex.split(sys.argv[1]))
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("input_file")
+    parser.add_argument("--resting_state", type=bool, default=True)
+    parser.add_argument("--json_annotations", type=bool, default=False)
+
+    args = parser.parse_args()
+
+    EDF_INPUT = " ".join(shlex.split(args.input_file))
+
     if not EDF_INPUT.lower().endswith('.edf'):
         print(EDF_INPUT)
         raise ValueError("needs EDF file input")
