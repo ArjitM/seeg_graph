@@ -2,9 +2,17 @@
 Code to derive functional connectivity measures from sEEG raw data.
 Implemented for either resting state LFPs or annotated seizure.
 
-Output is saved as .npy (numerical data) and .json (annotations)
+Output is saved as .pkl.gz (gunzip compressed pickle).
 
-args: Input is the singular path of an EDF file to be read.
+args:
+INPUT_FILE is the singular path of an EDF file to be read.
+RESTING_STATE (optional; default True) whether signal is resting state. If False, presumed to be a seizure recording
+JSON_ANNOTATIONS (optional; default False) whether a JSON file of the same name as INPUT_FILE contains annotations.
+OUTPUT_DIR (optional) where to save output, defaults to directory where INPUT_FILE is located
+BATCH_EVENTS (optional; default False) set as TRUE iff you want multiple seizures to be processed, resulting in
+inter-event averaged connectivity measures to characterize the prototypical event. In this case, INPUT_FILE is assumed
+to [some prefix]seizure[number].edf; the number is effectively ignored and all files within the parent directory
+are parsed if they match the name format.
 
 Key assumptions:
 1. EEG +/- EKG channels only. No EOG.
@@ -17,27 +25,37 @@ Key assumptions:
 
 Requirements:
 Intended use with python3.12
-Likely compatible with python3.5+
+mne v. 1.12
+mne_connectivity v. 0.81
+Likely compatible with python3.10+
 """
 
 __author__ = "Arjit Misra"
 __email__ = ["arjitm@uchicago.edu", "arjitm2@illinois.edu"]
 __version__ = "2026-July-21"
 
+import os
+
 import numpy as np
 import mne
-from mne_connectivity import spectral_connectivity_epochs, spectral_connectivity_time, phase_slope_index_time
+import scipy.signal
+from mne_connectivity import spectral_connectivity_epochs, spectral_connectivity_time, phase_slope_index_time, phase_slope_index
 from mne.preprocessing import ICA
 import re
-import sys
 import shlex
 import argparse
 import json
 import ast
+import pickle
+import gzip
 from fooof import FOOOF
+from pathlib import Path
+
+from openpyxl.styles.builtins import output
 
 UTILITY_FREQ = 60  # all recordings in the US, 60hz utility
 METRICS = ['plv', 'wpli'] #'dpli', 'wpli2_debiased', ]# 'dpli']
+METRICS_INTER = ['plv', 'ppc', 'wpli', 'dpli']
 
 # Beta split into low and high bands as this may differ in cortico-cortico and cortico-thalamic circuits, in particular
 # w.r.t. directed connectivity measures
@@ -55,6 +73,9 @@ FREQ_BANDS = {
     'gamma3': [122, 150],
 }
 
+
+T_EARLY_ICTAL_END = 10 #sec
+T_LATE_ICTAL_END = 30 #sec
 
 ### ======================= DO NOT EDIT BELOW THIS LINE ======================= ###
 
@@ -188,6 +209,33 @@ def event_based(signal: mne.io.BaseRaw):
     return results_cache
 
 
+def _inter_event(signals: np.ndarray, fs):
+
+    print(signals.shape)
+    results_cache = {band: dict() for band in FREQ_BANDS.keys()}
+    for band, limits in FREQ_BANDS.items():
+
+        con = spectral_connectivity_epochs(signals,
+                                           mode='multitaper',
+                                           method=METRICS_INTER,
+                                           sfreq=fs,
+                                           fmin=limits[0], fmax=limits[1],
+                                           faverage=True
+                                           )
+
+        eff = phase_slope_index(signals,
+                                fmin=limits[0], fmax=limits[1],
+                                sfreq=fs,
+                                mode='multitaper',
+                                )
+
+        for i, result in enumerate(con):
+            results_cache[band][METRICS_INTER[i]] = result.get_data(output='dense').squeeze(axis=-1)
+        results_cache[band]['psi'] = eff.get_data(output='dense').squeeze(axis=-1)
+
+    return results_cache
+
+
 def time_locked_events(signals):
     """
     Method to characterize a prototypical time-locked event (e.g. seizure) from several individual replicates.
@@ -196,13 +244,49 @@ def time_locked_events(signals):
     where t=0 is epileptologist-labeled seizure onset time.
     :return: time-locked, inter-epoch averaged functional/effective connectivity measures
     """
-    return
+    time_series = []
+    fs_arr = []
+    for sz in signals:
+        time_series.append(sz.get_data())
+        fs_arr.append(sz.info.get('sfreq'))
+
+    fs = np.min(fs_arr)
+
+    if np.unique(fs_arr).shape[0] != 1:  # check if different sampling rates
+        resampled = []
+        for i, ts in enumerate(time_series):
+            resampled.append(scipy.signal.resample(ts, int(len(ts) * fs / fs_arr[i])))
+    else:
+        resampled = time_series
+
+
+    early_ictal_stack = np.array([
+        rs[:, : int(fs * T_EARLY_ICTAL_END)]
+        for rs in resampled
+    ])
+
+    res = _inter_event(early_ictal_stack, fs)
+
+    fname = Path(EDF_INPUT).name.split('seizure')[0]
+    with gzip.open(args.output_dir.joinpath(f'{fname}_early_ictal_prototype.pkl.gz'),'wb') as ff:
+        pickle.dump(res, ff)
+
+    late_ictal_stack = np.array([
+            rs[:, int(fs * T_EARLY_ICTAL_END) : int(fs * T_LATE_ICTAL_END) ]
+            for rs in resampled
+        ])
+
+    res = _inter_event(late_ictal_stack, fs)
+
+    with gzip.open(args.output_dir.joinpath(f'{fname}_late_ictal_prototype.pkl.gz'), 'wb') as ff:
+        pickle.dump(res, ff)
 
 
 
-def ictal(raw: mne.io.BaseRaw):
 
-    with open(EDF_INPUT.replace('.edf', '.json'), 'r', encoding='utf-8') as ff:
+def _ictal_preictal_split(raw, sig_file):
+
+    with open(sig_file.replace('.edf', '.json'), 'r', encoding='utf-8') as ff:
         annttns = json.load(ff)
 
     task = annttns.get("TaskDescription", None)
@@ -217,19 +301,36 @@ def ictal(raw: mne.io.BaseRaw):
     else:
         return
 
-    ### logic for processing pre-/post-/ictal
     preictal_signal = raw.copy().crop(tmin=0.0, tmax=sz)
     ictal_signal = raw.copy().crop(tmin=sz, reset_first_samp=True)
 
-    RC = event_based(preictal_signal)
+    return {
+        "pre-ictal": preictal_signal,
+        "ictal": ictal_signal,
+        "channels": ioz,
+    }
 
-    # np.save(EDF_INPUT.replace(".edf", ".npy"), RC)
-    with open(EDF_INPUT.replace('.edf', '_connectivity.json'), 'w', encoding='utf-8') as ff:
-        json.dump(RC, ff, indent=4)
+
+def ictal(raw: mne.io.BaseRaw):
+
+    sz_data = _ictal_preictal_split(raw, EDF_INPUT)
+
+    preictal_signal = sz_data.get('pre-ictal')
+    ictal_signal = sz_data.get('ictal')
+
+    conn = event_based(preictal_signal)
+
+    fname = Path(EDF_INPUT).name.replace('.edf', '')
+    with gzip.open(args.output_dir.joinpath(f'{fname}_preictal_connectivity.pkl.gz'),'wb') as ff:
+        pickle.dump(conn, ff)
+
+    conn = event_based(ictal_signal)
+
+    with gzip.open(args.output_dir.joinpath(f'{fname}_ictal_connectivity.pkl.gz'),'wb') as ff:
+        pickle.dump(conn, ff)
 
 
-def run():
-    raw = mne.io.read_raw_edf(EDF_INPUT, preload=True)
+def _preprocess_to_bipolar(raw):
     raw.filter(l_freq=0.5, h_freq=None)
     raw.set_channel_types({c: 'ecg' if ('ecg' in c.lower() or 'ekg' in c.lower()) else 'eeg' for c in raw.ch_names})
     raw.notch_filter(60, 'eeg')
@@ -239,14 +340,33 @@ def run():
     ecg_inds, _ = ica.find_bads_ecg(raw, ch_name=raw.copy().pick(picks='ecg').ch_names[0], method='correlation')
     ica.exclude = ecg_inds
     ica.apply(raw)
+    return make_bipolar(raw)
 
-    raw_bipolar, bp_channels = make_bipolar(raw)
 
-    raw_epochs = mne.make_fixed_length_epochs(raw_bipolar, duration=20, overlap=10, verbose=False)
+def run():
 
-    # resting_state(raw_epochs)
-    ictal(raw_bipolar)
+    if args.batch_events:
+        parent_dir = Path(EDF_INPUT).parent
+        signals = []
+        channels = []
+        for ff in os.listdir(parent_dir):
+            if ff.endswith('.edf') and 'seizure' in ff.lower():
+                raw_sig = mne.io.read_raw_edf(parent_dir.joinpath(ff), preload=True)
+                raw_bp, _ = _preprocess_to_bipolar(raw_sig)
+                sz_data = _ictal_preictal_split(raw_bp, str(parent_dir.joinpath(ff)))
+                signals.append(sz_data.get('ictal'))
+                channels.append(sz_data.get('channels'))
+        time_locked_events(signals, channels, parent_dir)
+        return
 
+    raw = mne.io.read_raw_edf(EDF_INPUT, preload=True)
+    raw_bipolar, bp_channels = _preprocess_to_bipolar(raw)
+
+    if args.resting_state:
+        raw_epochs = mne.make_fixed_length_epochs(raw_bipolar, duration=20, overlap=10, verbose=False)
+        resting_state(raw_epochs)
+    else:
+        ictal(raw_bipolar)
 
 
 if __name__ == '__main__':
@@ -256,10 +376,17 @@ if __name__ == '__main__':
     parser.add_argument("input_file")
     parser.add_argument("--resting_state", type=bool, default=True)
     parser.add_argument("--json_annotations", type=bool, default=False)
+    parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument("--batch_events", type=bool, default=False)
 
     args = parser.parse_args()
 
-    EDF_INPUT = " ".join(shlex.split(args.input_file))
+    EDF_INPUT = " ".join(shlex.split(args.input_file))  # works with output of <ls> including /path\ with\ spaces/
+
+    if args.output_dir is not None:
+        args.output_dir = Path(" ".join(shlex.split(args.output_dir)))
+    else:
+        args.output_dir = Path(EDF_INPUT).parent  # if output_dir not explicitly provided, use input_file directory
 
     if not EDF_INPUT.lower().endswith('.edf'):
         print(EDF_INPUT)
