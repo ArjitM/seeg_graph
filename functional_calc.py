@@ -50,8 +50,7 @@ import pickle
 import gzip
 from fooof import FOOOF
 from pathlib import Path
-
-from openpyxl.styles.builtins import output
+from helper_methods import getBipolarChannels
 
 UTILITY_FREQ = 60  # all recordings in the US, 60hz utility
 METRICS = ['plv', 'wpli'] #'dpli', 'wpli2_debiased', ]# 'dpli']
@@ -82,52 +81,7 @@ T_LATE_ICTAL_END = 30 #sec
 
 def make_bipolar(raw: mne.io.BaseRaw):
 
-    # can handle space or no space prior to contact name, but expects LEAD<CONTACT_NUM> format
-    c_id = [(c, c.split(' ')[-1]) for c in raw.copy().pick(picks='eeg').ch_names]
-
-    ch_names, contacts = zip(*c_id)
-    ch_name_by_contact = dict({*zip(contacts, ch_names)})
-    pattern = re.compile(r"([A-Za-z]+)(\d+)$") #
-    contacts_by_lead = {}
-    for c in contacts:
-        m = pattern.match(c)
-        if m:
-            c_id = m.group(1)
-            contacts_by_lead[c_id] = contacts_by_lead.get(c_id, list())
-            contacts_by_lead[c_id].append(int(m.group(2)))
-
-    for lead in list(contacts_by_lead.keys()):  # keep list() expression to avoid write while iterating
-        contacts_by_lead[lead] = sorted(contacts_by_lead.get(lead))
-
-    bp_args = {
-        'anode': list(),
-        'cathode': list(),
-        'ch_name': list(),
-    }
-
-    for lead, contacts in contacts_by_lead.items():
-        '''
-        contacts are contiguous iff np.unique(np.diff(contacts))[0] == 1
-
-        example case 
-        >>> non_contig = [1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15]  # 6, 10 missing
-        then
-        >>> cl = np.where(np.diff(non_contig) == 1)[0]
-        >>> cl
-        array([ 0,  1,  2,  3,  5,  6,  8,  9, 10, 11])
-        >>> [non_contig[c] for c in cl]
-        [1, 2, 3, 4, 7, 8, 11, 12, 13, 14]'
-
-        Note that 4-5 is OK; 5-6 and 6-7 do not exist. Likewise for 8-9 OK. 9-10, 10-11 do not exist. 
-        This is the desired behavior for missing contacts 6 and 10. 
-        '''
-        contig_locations = np.where(np.diff(contacts) == 1)[0]
-        to_use = [contacts[ii] for ii in contig_locations]
-
-        bp_args['anode'] += [ch_name_by_contact.get(f'{lead}{c}') for c in to_use]
-        bp_args['cathode'] += [ch_name_by_contact.get(f'{lead}{c + 1}') for c in to_use]
-        bp_args['ch_name'] += [f'{lead}_{c}-{c + 1}' for c in to_use]
-
+    bp_args = getBipolarChannels(raw.copy().pick(picks='eeg').ch_names)
     return mne.set_bipolar_reference(raw, **bp_args), bp_args.get('ch_name')
 
 
