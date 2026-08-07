@@ -32,12 +32,13 @@ Likely compatible with python3.10+
 
 __author__ = "Arjit Misra"
 __email__ = ["arjitm@uchicago.edu", "arjitm2@illinois.edu"]
-__version__ = "2026-July-21"
+__version__ = "2026-Aug-5"
 
 import os
 
 import numpy as np
 import mne
+import pandas as pd
 import scipy.signal
 from mne_connectivity import spectral_connectivity_epochs, spectral_connectivity_time, phase_slope_index_time, phase_slope_index
 from mne.preprocessing import ICA
@@ -119,10 +120,12 @@ def resting_state(raw_epochs: mne.Epochs):
 
         results_cache[band]['psi'] = eff.get_data(output='dense').squeeze(axis=-1)
 
-    return  results_cache
+    fname = Path(EDF_INPUT).name.replace('.edf', '')
+    with gzip.open(args.output_dir.joinpath(f'{fname}_preictal_connectivity.pkl.gz'), 'wb') as ff:
+        pickle.dump(results_cache, ff)
 
 
-def event_based(signal: mne.io.BaseRaw):
+def _event_based_connectivity(signal: mne.io.BaseRaw):
     """
     Functional and effective connectivity for one event/time series
     :param signal:
@@ -236,8 +239,6 @@ def time_locked_events(signals):
         pickle.dump(res, ff)
 
 
-
-
 def _ictal_preictal_split(raw, sig_file):
 
     with open(sig_file.replace('.edf', '.json'), 'r', encoding='utf-8') as ff:
@@ -272,13 +273,13 @@ def ictal(raw: mne.io.BaseRaw):
     preictal_signal = sz_data.get('pre-ictal')
     ictal_signal = sz_data.get('ictal')
 
-    conn = event_based(preictal_signal)
+    conn = _event_based_connectivity(preictal_signal)
 
     fname = Path(EDF_INPUT).name.replace('.edf', '')
     with gzip.open(args.output_dir.joinpath(f'{fname}_preictal_connectivity.pkl.gz'),'wb') as ff:
         pickle.dump(conn, ff)
 
-    conn = event_based(ictal_signal)
+    conn = _event_based_connectivity(ictal_signal)
 
     with gzip.open(args.output_dir.joinpath(f'{fname}_ictal_connectivity.pkl.gz'),'wb') as ff:
         pickle.dump(conn, ff)
@@ -287,7 +288,7 @@ def ictal(raw: mne.io.BaseRaw):
 def _preprocess_to_bipolar(raw):
     raw.filter(l_freq=0.5, h_freq=None)
     raw.set_channel_types({c: 'ecg' if ('ecg' in c.lower() or 'ekg' in c.lower()) else 'eeg' for c in raw.ch_names})
-    raw.notch_filter(60, 'eeg')
+    raw.notch_filter(UTILITY_FREQ, 'eeg')
 
     ica = ICA(n_components=None, method='fastica', random_state=14)
     ica.fit(raw)
@@ -297,9 +298,90 @@ def _preprocess_to_bipolar(raw):
     return make_bipolar(raw)
 
 
+def _aperiodic_exp(signal1d, fs, f_min, f_max):
+    f, pxx = scipy.signal.welch(signal1d, fs, nperseg=256, noverlap=128, detrend='constant')
+    m = (f >= f_min) & (f <= f_max) & np.isfinite(pxx) & (pxx > 0)
+    if np.sum(m) < 10:
+        return np.nan
+
+    fm = FOOOF(peak_width_limits=(1, 12), max_n_peaks=6, verbose=False)
+    fm.fit(f[m], pxx[m])
+    ap = fm.get_params("aperiodic_params")  # [offset, exponent]
+    return float(ap[1])
+
+
+def _bandpower(signal1d, fs):
+
+    nperseg = min(len(signal1d), int(fs * min(10, int(len(signal1d) / fs))))
+    f, psd = scipy.signal.welch(signal1d, fs=fs, nperseg=nperseg)
+    band_powers = {}
+    for b, f_lim in FREQ_BANDS.items():
+        # numerical integration over frequency range
+        band_powers[f'{b}_power'] = np.trapz(
+            psd[(f >= f_lim[0]) & (f < f_lim[1])],
+            x=f[(f >= f_lim[0]) & (f < f_lim[1])]
+        )
+    return band_powers
+
+
+def _entropy(signal1d, fs):
+
+    dur_norm = len(signal1d) * fs / 1000  # relative length of signal, for uniformity in binning
+    num_bins = int(dur_norm ** 0.5)
+
+    # Discretize the signal into bins, then normalize
+    histogram, _ = np.histogram(signal1d, bins=num_bins, density=True)
+    probabilities = histogram / np.sum(histogram)
+    probabilities = probabilities[probabilities > 0]
+
+    return scipy.stats.entropy(probabilities)  # shannon entropy
+
+
+def _node_features(signal2d: np.ndarray, fs, ch_names) -> pd.DataFrame:
+    ap_exp, band_pow, entropy = list(), list(), list()
+    for sig_ch in signal2d:
+        ap_exp.append(_aperiodic_exp(sig_ch, fs, f_min=5, f_max=55))
+        band_pow.append(_bandpower(sig_ch, fs))  # list of dicts
+        entropy.append(_entropy(sig_ch, fs))
+
+    df = pd.concat([
+        pd.DataFrame.from_dict({'ch_name': ch_names,
+                                'aperiodic_exponent': ap_exp,
+                                'entropy': entropy,}),
+        pd.DataFrame(band_pow),
+    ], axis=1)
+    return df
+
+
+def single_channel(raw: mne.io.BaseRaw | mne.Epochs, dynamic: bool):
+    """
+    Derive single-channel waveform and spectral features, aperiodic exponent.
+    Saves CSV file in OUTPUT_DIR
+    """
+    fs = raw.info.get('sfreq')
+    fname = Path(EDF_INPUT).name.replace('.edf', '')
+
+
+    if dynamic:
+        sz_data = _ictal_preictal_split(raw, EDF_INPUT)
+        preictal_signal = sz_data.get('pre-ictal')
+        ictal_signal = sz_data.get('ictal')
+        pdf = _node_features(preictal_signal, fs, raw.ch_names)
+        pdf.to_csv(args.output_dir.joinpath(f'{fname}_preictal_node_level.csv'))
+        idf = _node_features(ictal_signal, fs, raw.ch_names)
+        idf.to_csv(args.output_dir.joinpath(f'{fname}_ictal_node_level.csv'))
+
+    else:
+        signal2d_epochs = raw.get_data()
+        epoch_dfs = [_node_features(s2d, fs, raw.ch_names) for s2d in signal2d_epochs]
+        df = pd.concat(epoch_dfs).groupby(level=0).mean()
+        df.to_csv(args.output_dir.joinpath(f'{fname}_resting_node_level.csv'))
+
+
 def run():
 
     if args.batch_events:
+        # Batch process seizures as time-locked events and derive metrics across events
         parent_dir = Path(EDF_INPUT).parent
         signals = []
         channels = []
@@ -317,9 +399,13 @@ def run():
     raw_bipolar, bp_channels = _preprocess_to_bipolar(raw)
 
     if args.resting_state:
+        # For resting state signal, split into overlapping time epochs and average over them
         raw_epochs = mne.make_fixed_length_epochs(raw_bipolar, duration=20, overlap=10, verbose=False)
         resting_state(raw_epochs)
+
     else:
+        # Each ictal recording processed individually. For patient-level batch processing use BATCH_EVENTS=True.
+        # Note recordings contain pre-ictal signal. Time series is split as per annotations.
         ictal(raw_bipolar)
 
 

@@ -3,7 +3,6 @@ import re
 from nibabel.affines import apply_affine
 
 
-
 def getBipolarChannels(channels: list[str], allow_missing=True):
 
     # can handle space or no space prior to contact name, but expects LEAD<CONTACT_NUM> format
@@ -59,8 +58,6 @@ def getBipolarChannels(channels: list[str], allow_missing=True):
     return bp_args
 
 
-
-
 def check_streamline_bounds(
     streamlines,
     affine: np.ndarray,
@@ -105,6 +102,7 @@ def check_streamline_bounds(
     print("Negative-bound streamlines:", n_negative)
     print("Upper-bound streamlines:", n_above)
     print("Total streamlines:", n_total)
+
 
 def pad_inferior_z(
     label_volume: np.ndarray,
