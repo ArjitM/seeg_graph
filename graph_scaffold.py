@@ -38,18 +38,28 @@ def centrality(G: nx.Graph, directed=False):
         return in_c, out_c
 
 
-def smoothness(G: nx.Graph, x: np.array, normalized=True, directed=False):
+def smoothness(G: nx.Graph, x: np.array, normalized=True, symm=False):
 
-    if not directed:
+    if not symm:
         L = nx.laplacian_matrix(G).toarray()
+        D = L.diagonal() * np.identity(L.shape[0])
+        norm = x.T @ D @ x
     else:
         L = nx.normalized_laplacian_matrix(G).toarray()  # symmetrically normalized
+        norm = x.T @ x
 
     quad_form = x.T @ L @ x
-    D = L.diagonal() * np.identity(L.shape[0])
-    norm = x.T @ D @ x
+
     return quad_form / norm if normalized else quad_form
 
 
+def synchronizability(G: nx.Graph):
+    """
+    Assume Graph has 1 connected component
+    """
+    eigenvals = nx.laplacian_spectrum(G)
+
+    # Synchronizability := λ_2 / λ_max
+    return eigenvals[1] / eigenvals[-1]
 
 
