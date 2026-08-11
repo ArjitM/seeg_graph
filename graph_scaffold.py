@@ -84,13 +84,11 @@ def synchronizability(G: nx.Graph):
 
 def _substitute_node(G: nx.Graph, node, scaffold: nx.Graph) -> nx.Graph:
     """
-    Helper method to substitute node edge weights with
-    those of a control/normative scaffold graphD.
-    :param G:
-    :param node:
-    :param scaffold: normative Graph or corresponding Adjacency matrix.
-    :return:
+    Helper method to substitute node edge weights with those of a control/normative scaffold graph.
+    !! NOTE: Only implemented for undirected graphs. !!
     """
+    if G.is_directed():
+        raise ValueError("Graph must be undirected.")
     G_new = G.copy()
     G_new.remove_edges_from(list(G.edges(node)))
     G_new.add_weighted_edges_from(scaffold.edges(node))
@@ -100,7 +98,7 @@ def _substitute_node(G: nx.Graph, node, scaffold: nx.Graph) -> nx.Graph:
 def control_centrality_resection(G: nx.Graph, nodes: npt.ArrayLike):
     """
     Calculates the change in network sychronizability upon removal of graph node NODE.
-    Introduced by Khambati et al, 2016. Under this framework, large positive (Z-transformed) increases in network
+    Introduced by Khambhati et al, 2016. Under this framework, large positive (Z-transformed) increases in network
     synchronizability upon node resection implies the node is a network desynchronizer. Conversely, large
     decreases in synchronizability upon resection implies the node is a network synchronizer.
     """
@@ -117,7 +115,7 @@ def control_centrality_resection(G: nx.Graph, nodes: npt.ArrayLike):
 
 def control_centrality_transplant(G_0: nx.Graph, G_normative: nx.Graph, nodes: npt.ArrayLike):
     """
-    Our novel extension of Khambati et al. framework. Instead of node removal, we substitute node edge weights with
+    Our novel extension of Khambhati et al. framework. Instead of node removal, we substitute node edge weights with
     those of a control/normative graph, G_normative and calculate the change in network
     synchronizabilty upon doing so.
     """
