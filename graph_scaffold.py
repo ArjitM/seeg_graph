@@ -4,31 +4,59 @@ explorations.
 """
 __author__ = "Arjit Misra"
 __email__ = ["arjitm@uchicago.edu", "arjitm2@illinois.edu"]
-__version__ = "2026-Aug-11"
+__version__ = "2026-Aug-13"
 
 import networkx as nx
 import numpy as np
 import numpy.typing as npt
 
 
-def matToGraph(matrix2d, node_labels: npt.ArrayLike, node_val_dict=None) -> nx.Graph:
+def _matToDirected(matrix2d, node_labels):
+    n = matrix2d.shape[0]
+    u_diag = np.triu_indices(n, 1)
+    l_diag = np.tril_indices(n, 1)
+    upper = np.all(matrix2d[u_diag] == 0)
+    lower = np.all(matrix2d[l_diag] == 0)
+    if upper and lower:
+        return nx.DiGraph()
+    elif upper:
+        matrix2d[u_diag] = -matrix2d[l_diag]
+    elif lower:
+        matrix2d[l_diag] = -matrix2d[u_diag]
+
+    node_pair_weights = []
+    for i in range(n):
+        for j in range(n):
+            node_pair_weights.append((node_labels[i], node_labels[j], matrix2d[i][j]))
+
+    G = nx.DiGraph()
+    G.add_weighted_edges_from(node_pair_weights)
+    return G
+
+
+def matToGraph(matrix2d, node_labels: npt.ArrayLike, node_val_dict=None, directed=False) -> nx.Graph:
     """
     Create a Graph from a 2D matrix, representing the pairwise Adjacency Matrix.
+    :param directed: True iff directed Graph
     :param matrix2d: Adjacency matrix
     :param node_labels: Node identities
     :param node_val_dict:
     :return:
     """
-    G = nx.Graph()
-    if np.all((matrix2d - matrix2d.T)!=0):
-        # Make symmetric iff matrix is not already symmetric
-        matrix2d = matrix2d + matrix2d.T  # assume matrix is lower or upper triangular with 0 diagonal
+    if directed:
+        G = _matToDirected(matrix2d, node_labels)
 
-    inds = list(zip(*np.triu_indices(matrix2d.shape[0], 1)))  # [ (i1, j1), (i2, j2), ... ]
-    weights = [matrix2d[ii] for ii in inds]
-    node_pairs = [(node_labels[i], node_labels[j]) for (i, j) in inds]
+    else:
+        G = nx.Graph()
+        if np.all((matrix2d - matrix2d.T)!=0):
+            # Make symmetric iff matrix is not already symmetric
+            matrix2d = matrix2d + matrix2d.T  # assume matrix is lower or upper triangular with 0 diagonal
 
-    G.add_weighted_edges_from(zip(*zip(node_pairs), weights))  #  < (node_1, node_2, weight) ... >
+        inds = list(zip(*np.triu_indices(matrix2d.shape[0], 1)))  # [ (i1, j1), (i2, j2), ... ]
+        weights = [matrix2d[ii] for ii in inds]
+        node_pairs = [(node_labels[i], node_labels[j]) for (i, j) in inds]
+
+        G.add_weighted_edges_from(zip(*zip(node_pairs), weights))  #  < (node_1, node_2, weight) ... >
 
     if node_val_dict is not None:  # Optionally assign node attributes (may be multiple)
         for nl in node_labels:
@@ -45,31 +73,68 @@ def assortativity(G: nx.Graph, node_vals=None, attribute=None):
     nx.numeric_assortativity_coefficient(G, attribute)
 
 
-def centrality(G: nx.Graph, directed=False):
+def between_centrality(G: nx.Graph | nx.DiGraph, directed=False):
+
+    """
+    Betweenness centrality is based on a shortest_path heuristic. Thus, edge weights must be inverted to be
+    represented as cost (i.e. higher number is weaker link).
+    Directed graphs are primarily used in this project for effective connectivity metrics.
+    Thus for directed graphs, we assume that if there exist negative values, then a->b = -b->a, as in for PSI.
+    Contrarily, for measures such as GC, where a->b =/= (-) b->a, there are no negative values.
+    While bidirectional betweenness can be calculated, we choose to instead split IN vs OUT into distinct graphs
+    and thus derive 2 values so as to better appreciate physiology.
+    """
+
     if not directed:
-        c = nx.betweenness_centrality(G)
+        G_cost = nx.Graph()
+        edge_wts = G.edges.data('weight', default=0)
+        max_wt = max(edge_wts, key=lambda t:t[2])[2]  # expect tuples (node_1, node_2, weight)
+        edge_wts = G.edges.data('weight', default=1/(max_wt * 5))
+        # nx implementation recommends integer weights
+        G_cost.add_weighted_edges_from([(n1, n2, int(100 * max_wt/w)) for (n1, n2, w) in edge_wts])
+        c = nx.edge_betweenness_centrality(G)
         return c
+
     else:
-        in_c = nx.in_degree_centrality(G)
-        out_c = nx.out_degree_centrality(G)
-        return in_c, out_c
+        n = len(list(G.nodes()))
+
+        in_weights = G.in_edges().data('weight', default=0)
+        out_weights = G.out_edges().data('weight', default=0)
+
+        ii = np.random.randint(0, n + 1)
+        jj = ii
+        while n != 0 and jj == ii:
+            jj = np.random.randint(0, n + 1)
+
+        if G[ii, jj]['weight'] == (-1 * G[jj, ii]['weight']):
+            G_pos = nx.Graph()
+            G_pos.add_weighted_edges_from([edge for edge in in_weights if edge[2] > 0])
+            G_pos.add_weighted_edges_from([edge for edge in out_weights if edge[2] > 0])
+            return between_centrality(G_pos, directed=False)  # keep positive weights only and treat as undirected
+
+        else:
+            G_forward = nx.Graph()
+            G_forward.add_weighted_edges_from(in_weights)
+            G_backward = nx.Graph()
+            G_backward.add_weighted_edges_from(out_weights)
+            return between_centrality(G_forward, directed=False), between_centrality(G_backward, directed=False)
 
 
-def smoothness(G: nx.Graph, x: npt.ArrayLike, normalized=True, symm=True):
+def smoothness(G: nx.Graph, x: npt.ArrayLike, rayleigh=True, normalized=True):
     x = np.array(x)
-    if not symm:
+    if not normalized:
         # L = D - A
         L = nx.laplacian_matrix(G).toarray()
         D = L.diagonal() * np.identity(L.shape[0])
         norm = x.T @ D @ x
     else:
-        # L_symm = I - D^(-1/2) A D^(-1/2)
+        # L_norm = I - D^(-1/2) A D^(-1/2)
         L = nx.normalized_laplacian_matrix(G).toarray()  # symmetrically normalized
         norm = x.T @ x
 
     quad_form = x.T @ L @ x
 
-    return quad_form / norm if normalized else quad_form
+    return quad_form / norm if rayleigh else quad_form
 
 
 def synchronizability(G: nx.Graph):
