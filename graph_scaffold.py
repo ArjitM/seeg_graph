@@ -120,7 +120,7 @@ def between_centrality(G: nx.Graph | nx.DiGraph, directed=False):
             return between_centrality(G_forward, directed=False), between_centrality(G_backward, directed=False)
 
 
-def smoothness(G: nx.Graph, x: npt.ArrayLike, rayleigh=True, normalized=True):
+def roughness(G: nx.Graph, x: npt.ArrayLike, rayleigh=True, normalized=True):
     x = np.array(x)
     if not normalized:
         # L = D - A
