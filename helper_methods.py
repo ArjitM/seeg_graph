@@ -3,21 +3,35 @@ import re
 from nibabel.affines import apply_affine
 
 
-def getBipolarChannels(channels: list[str], allow_missing=True):
+def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs=None):
 
     # can handle space or no space prior to contact name, but expects LEAD<CONTACT_NUM> format
     c_id = [(c, c.split(' ')[-1]) for c in channels]
 
     ch_names, contacts = zip(*c_id)
     ch_name_by_contact = dict({*zip(contacts, ch_names)})
-    pattern = re.compile(r"([A-Za-z]+)(\d+)$") #
+    pattern = re.compile(r"([A-Za-z]+)(\d+)$")
     contacts_by_lead = {}
+    exclude_contacts_by_lead = {}
+
+    if exclude_pairs is not None:
+        pair_pat = re.compile(r"([A-Za-z]+)(\d+)-(\d+)")
+        for ep in exclude_pairs:
+            m = pair_pat.match(ep)
+            ll, c1, c2 = m.groups()
+            if abs(c2 - c1) == 1:
+                exclude_contacts_by_lead[ll] = exclude_contacts_by_lead.get(ll, list())
+                exclude_contacts_by_lead[ll].append(int(c1))
+
     for c in contacts:
         m = pattern.match(c)
         if m:
             c_id = m.group(1)
             contacts_by_lead[c_id] = contacts_by_lead.get(c_id, list())
-            contacts_by_lead[c_id].append(int(m.group(2)))
+
+            cntct  = int(m.group(2))
+            if cntct not in exclude_contacts_by_lead.get(c_id, list()):
+                contacts_by_lead[c_id].append(cntct)
 
     for lead in list(contacts_by_lead.keys()):  # keep list() expression to avoid write while iterating
         contacts_by_lead[lead] = sorted(contacts_by_lead.get(lead))
