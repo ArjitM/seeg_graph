@@ -414,10 +414,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument("input_file")
-    parser.add_argument("--resting_state", type=bool, default=True)
-    parser.add_argument("--json_annotations", type=bool, default=False)
+    parser.add_argument("--resting_state", action="store_true")
+    parser.add_argument("--json_annotations", action="store_true")
     parser.add_argument("--output_dir", type=str, default=None)
-    parser.add_argument("--batch_events", type=bool, default=False)
+    parser.add_argument("--batch_events", action="store_true")
 
     args = parser.parse_args()
 

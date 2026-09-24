@@ -1,9 +1,9 @@
 import argparse
 import os
 os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = "4"  # change as needed; export prior to ants import
-# # For cluster runs, uncomment below
-# n_threads = os.environ.get("SLURM_CPUS_PER_TASK", "1")
-# os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = n_threads
+# For cluster runs, uncomment below
+n_threads = os.environ.get("SLURM_CPUS_PER_TASK", "1")
+os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = n_threads
 
 import ants
 import json
@@ -137,16 +137,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Local testing only
-    import caffeine
-    caffeine.on(display=False)
+    # # Local testing only
+    # import caffeine
+    # caffeine.on(display=False)
 
     n4, stripped, mask = preprocess_t1(args.preop_MRI_path, args.output_dir, args.synthstrip_exe_path)
     register_t1_to_mni(stripped, args.registration_template, args.output_dir)
     ct_to_t1(args.postop_CT_path, args.preop_MRI_path, args.output_dir)
 
-    # Local testing only
-    caffeine.off()
+    # # Local testing only
+    # caffeine.off()
 
 '''
 python3 image_preproc_register.py \
@@ -155,5 +155,4 @@ python3 image_preproc_register.py \
 --registration_template /Users/arjit/Documents/_Lab/thalamic_stim/mni_icbm152_t1_nlin_asym_09b_stripped.nii \
 --output_dir /Users/arjit/Documents/_Lab/thalamic_stim/Colorado_thalamic_SEEG_data/derivatives/CUS001_22_08_01 \
 --synthstrip_exe_path /Users/arjit/Documents/_Lab/thalamic_stim/synthstrip-docker
-
 '''

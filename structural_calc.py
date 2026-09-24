@@ -34,7 +34,6 @@ TEMPLATE_NII = None
 TRACTOGRAM_TRK = None
 OUTPUT_DIR = None
 
-RADIUS_MM = 3.0
 MAX_SEGMENT_MM = 0.75
 
 
@@ -148,7 +147,9 @@ def create_contact_rois(
         voxels, distances_squared = sphere_voxels(center_mm=center, radius_mm=radius_mm, shape=shape, affine=affine)
 
         if len(voxels) == 0:
-            raise ValueError(f"No valid voxels for contact {row['name']}.")
+            # raise ValueError(f"No valid voxels for contact {row['name']}.")
+            print(f"No valid voxels for contact {row['name']}. {center}")
+            continue
 
         i, j, k = voxels.T
 
@@ -188,7 +189,7 @@ def create_contact_rois(
     atlas_path = output_dir.joinpath(f"contacts_radius-{radius_mm:g}mm_dseg.nii.gz")
 
     nib.save(
-        nib.Nifti1Image( label_volume, affine, atlas_header),
+        nib.Nifti1Image(label_volume, affine, atlas_header),
         atlas_path,
     )
 
@@ -341,7 +342,10 @@ def compute_connectivity(
 def run():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    contacts = pd.read_csv(CONTACTS_TSV, sep="\t")
+    if CONTACTS_TSV.name.endswith('.tsv'):
+        contacts = pd.read_csv(CONTACTS_TSV, sep="\t")
+    else:
+        contacts = pd.read_csv(CONTACTS_TSV)
 
     required_columns = {"name", "x", "y", "z"}
     missing = required_columns - set(contacts.columns)
@@ -379,6 +383,7 @@ if __name__ == "__main__":
     parser.add_argument("--template_image", type=str, default='')
     parser.add_argument("--tractogram", type=str, default='')
     parser.add_argument("--output_dir", type=str, default='')
+    parser.add_argument("--radius", type=float, default=3.5)
 
     args = parser.parse_args()
 
@@ -391,6 +396,8 @@ if __name__ == "__main__":
     if OUTPUT_DIR is None:
         OUTPUT_DIR = args.output_dir
 
+    RADIUS_MM = args.radius
+
     if not (CONTACTS_TSV and TEMPLATE_NII and TRACTOGRAM_TRK and OUTPUT_DIR):
         raise ValueError("Missing arguments! Need input file locations for contact coordinates, template image, "
                          "normative tractogram, and output directory ")
@@ -402,4 +409,11 @@ if __name__ == "__main__":
 
     run()
 
+'''
+python /Users/arjit/Documents/_Lab/thalamic_stim/seeg_graph/structural_calc.py \
+--contacts_coordinates="/Users/arjit/Documents/_Lab/thalamic_stim/Colorado_thalamic_SEEG_data/derivatives/CUS002_22_09_19/registrations/Contacts_MNI_space.csv" \
+--template_image=/Users/arjit/Documents/_Lab/thalamic_stim/FA_template_1000_HCP.nii.gz \
+--tractogram=/Users/arjit/Documents/_Lab/thalamic_stim/dTOR_full_tractogram.trk \
+--output_dir="/Users/arjit/Documents/_Lab/thalamic_stim/Colorado_thalamic_SEEG_data/derivatives/CUS002_22_09_19/registrations/normative_struct/"
 
+'''
