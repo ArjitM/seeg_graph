@@ -1,27 +1,39 @@
 import numpy as np
 import re
 from nibabel.affines import apply_affine
+from collections.abc import Iterable
 
 
-def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs=None):
+def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs: Iterable[str] | None=None):
+    """
+    Return bipolar channels from a list of channels, named as LeadNum format.
+    :param channels: all channels, can be multiple electrodes
+    :param allow_missing: if False, then raise for an electrode with missing channels
+    :param exclude_pairs: Any pairs to exclude. Use any iterable of strings. Each pair should be named LeadNum1-Num2.
+    :return: Dict with "anode", "cathode" channels and "ch_name" names for composite channels
+    """
 
     # can handle space or no space prior to contact name, but expects LEAD<CONTACT_NUM> format
     c_id = [(c, c.split(' ')[-1]) for c in channels]
 
     ch_names, contacts = zip(*c_id)
     ch_name_by_contact = dict({*zip(contacts, ch_names)})
-    pattern = re.compile(r"([A-Za-z]+)(\d+)$")
+    pattern = re.compile(r"([A-Za-z][A-Za-z0-9]*?)(\d+)$")
     contacts_by_lead = {}
     exclude_contacts_by_lead = {}
 
     if exclude_pairs is not None:
-        pair_pat = re.compile(r"([A-Za-z]+)(\d+)-(\d+)")
+        pair_pat = re.compile(r"([A-Za-z][A-Za-z0-9]*?)(\d+)-(\d+)$")
         for ep in exclude_pairs:
             m = pair_pat.match(ep)
+            if m is None:
+                raise ValueError(f"Invalid excluded pair: {ep!r}")
             ll, c1, c2 = m.groups()
+            c1 = int(c1)
+            c2 = int(c2)
             if abs(c2 - c1) == 1:
                 exclude_contacts_by_lead[ll] = exclude_contacts_by_lead.get(ll, list())
-                exclude_contacts_by_lead[ll].append(int(c1))
+                exclude_contacts_by_lead[ll].append(min(c1, c2))
 
     for c in contacts:
         m = pattern.match(c)
@@ -29,9 +41,8 @@ def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs=No
             c_id = m.group(1)
             contacts_by_lead[c_id] = contacts_by_lead.get(c_id, list())
 
-            cntct  = int(m.group(2))
-            if cntct not in exclude_contacts_by_lead.get(c_id, list()):
-                contacts_by_lead[c_id].append(cntct)
+            cntct = int(m.group(2))
+            contacts_by_lead[c_id].append(cntct)
 
     for lead in list(contacts_by_lead.keys()):  # keep list() expression to avoid write while iterating
         contacts_by_lead[lead] = sorted(contacts_by_lead.get(lead))
@@ -44,30 +55,31 @@ def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs=No
 
     for lead, contacts in contacts_by_lead.items():
         '''
-        contacts are contiguous iff np.unique(np.diff(contacts)).shape[0] == 1
+        contacts are contiguous iff all consecutive differences equal 1
 
-        example case 
+        example case
         >>> non_contig = [1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 13, 14, 15]  # 6, 10 missing
         then
         >>> cl = np.where(np.diff(non_contig) == 1)[0]
         >>> cl
         array([ 0,  1,  2,  3,  5,  6,  8,  9, 10, 11])
         >>> [non_contig[c] for c in cl]
-        [1, 2, 3, 4, 7, 8, 11, 12, 13, 14]'
+        [1, 2, 3, 4, 7, 8, 11, 12, 13, 14]
 
-        Note that 4-5 is OK; 5-6 and 6-7 do not exist. Likewise for 8-9 OK. 9-10, 10-11 do not exist. 
+        Note that 4-5 is OK; 5-6 and 6-7 do not exist. Likewise for 8-9 OK. 9-10, 10-11 do not exist.
         This is the desired behavior for missing contacts 6 and 10 when ALLOW_MISSING is set to TRUE.
         '''
 
-        if not allow_missing and np.unique(np.diff(contacts)).shape[0] != 1:
+        if not allow_missing and not np.all(np.diff(contacts) == 1):
             raise ValueError("missing contacts")
 
         contig_locations = np.where(np.diff(contacts) == 1)[0]
-        to_use = [contacts[ii] for ii in contig_locations]
+        to_use = [contacts[ii] for ii in contig_locations
+                  if contacts[ii] not in exclude_contacts_by_lead.get(lead, list())]
 
         bp_args['anode'] += [ch_name_by_contact.get(f'{lead}{c}') for c in to_use]
         bp_args['cathode'] += [ch_name_by_contact.get(f'{lead}{c + 1}') for c in to_use]
-        bp_args['ch_name'] += [f'{lead}_{c}-{c + 1}' for c in to_use]
+        bp_args['ch_name'] += [f'{lead}{c}-{c + 1}' for c in to_use]
 
     return bp_args
 

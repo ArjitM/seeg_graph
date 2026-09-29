@@ -6,7 +6,7 @@ Output is saved as .pkl.gz (gunzip compressed pickle).
 
 args:
 INPUT_FILE is the singular path of an EDF file to be read.
-RESTING_STATE (optional; default True) whether signal is resting state. If False, presumed to be a seizure recording
+RESTING_STATE (optional; default False) whether signal is resting state. If False, presumed to be a seizure recording
 JSON_ANNOTATIONS (optional; default False) whether a JSON file of the same name as INPUT_FILE contains annotations.
 OUTPUT_DIR (optional) where to save output, defaults to directory where INPUT_FILE is located
 BATCH_EVENTS (optional; default False) set as TRUE iff you want multiple seizures to be processed, resulting in
@@ -83,7 +83,9 @@ T_LATE_ICTAL_END = 30 #sec
 def make_bipolar(raw: mne.io.BaseRaw):
 
     bp_args = getBipolarChannels(raw.copy().pick(picks='eeg').ch_names)
-    return mne.set_bipolar_reference(raw, **bp_args), bp_args.get('ch_name')
+    bp_referenced = mne.set_bipolar_reference(raw, **bp_args)
+    bp_referenced.pick(list(set(bp_referenced.ch_names) - set(raw.ch_names)))
+    return bp_referenced, bp_args.get('ch_name')
 
 
 def resting_state(raw_epochs: mne.Epochs):
@@ -94,7 +96,7 @@ def resting_state(raw_epochs: mne.Epochs):
 
         freqs = np.logspace(np.log10(limits[0]), np.log10(limits[1]), num=10)
         con = spectral_connectivity_time(raw_epochs,
-                                         n_cycles=8,
+                                         n_cycles=4,
                                          freqs=freqs,
                                          method=METRICS,
                                          sfreq=raw_epochs.info.get('sfreq'),
@@ -110,7 +112,7 @@ def resting_state(raw_epochs: mne.Epochs):
                                      sfreq=raw_epochs.info.get('sfreq'),
                                      mode='cwt_morlet',
                                      average=True,
-                                     n_cycles=8)
+                                     n_cycles=4)
 
         for i, result in enumerate(con):  # expect an array of [m x m x 1] matrices, where m = # of contacts
             synch = result.get_data(output='dense')
@@ -144,7 +146,7 @@ def _event_based_connectivity(signal: mne.io.BaseRaw):
                                          # decim=20,
                                          freqs=freqs,
                                          fmin=limits[0], fmax=limits[1],
-                                         n_cycles=8,
+                                         n_cycles=4,
                                          average=True,
                                          faverage=True)
 
@@ -154,7 +156,7 @@ def _event_based_connectivity(signal: mne.io.BaseRaw):
                                      sfreq=signal.info.get('sfreq'),
                                      mode='cwt_morlet',
                                      average=True,
-                                     n_cycles=8)
+                                     n_cycles=4)
 
         for i, result in enumerate(con):
             synch = result.get_data(output='dense')
@@ -254,10 +256,10 @@ def _ictal_preictal_split(raw, sig_file):
         )
 
     else:
-        return
+        return {'resting': raw.copy()}
 
     preictal_signal = raw.copy().crop(tmin=0.0, tmax=sz)
-    ictal_signal = raw.copy().crop(tmin=sz, reset_first_samp=True)
+    ictal_signal = raw.copy().crop(tmin=sz, tmax=sz + 30)
 
     return {
         "pre-ictal": preictal_signal,
@@ -361,14 +363,13 @@ def single_channel(raw: mne.io.BaseRaw | mne.Epochs, dynamic: bool):
     fs = raw.info.get('sfreq')
     fname = Path(EDF_INPUT).name.replace('.edf', '')
 
-
     if dynamic:
         sz_data = _ictal_preictal_split(raw, EDF_INPUT)
         preictal_signal = sz_data.get('pre-ictal')
         ictal_signal = sz_data.get('ictal')
-        pdf = _node_features(preictal_signal, fs, raw.ch_names)
+        pdf = _node_features(preictal_signal.get_data(), fs, raw.ch_names)
         pdf.to_csv(args.output_dir.joinpath(f'{fname}_preictal_node_level.csv'))
-        idf = _node_features(ictal_signal, fs, raw.ch_names)
+        idf = _node_features(ictal_signal.get_data(), fs, raw.ch_names)
         idf.to_csv(args.output_dir.joinpath(f'{fname}_ictal_node_level.csv'))
 
     else:
@@ -392,7 +393,7 @@ def run():
                 sz_data = _ictal_preictal_split(raw_bp, str(parent_dir.joinpath(ff)))
                 signals.append(sz_data.get('ictal'))
                 channels.append(sz_data.get('channels'))
-        time_locked_events(signals, channels, parent_dir)
+        time_locked_events(signals)
         return
 
     raw = mne.io.read_raw_edf(EDF_INPUT, preload=True)
