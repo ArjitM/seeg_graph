@@ -33,7 +33,7 @@ numpy, scipy, pandas, helper_methods.py, and sz_spread.py.
 """
 __author__ = "Arjit Misra"
 __email__ = ["arjitm@uchicago.edu", "arjitm2@illinois.edu"]
-__version__ = "2026-Sep-30"
+__version__ = "2026-Oct-3"
 
 import warnings
 import datetime
@@ -172,6 +172,7 @@ def _ictal_preictal_split(raw, sig_file, preictal_s=30.0):
             sz_time = sz_time.replace(tzinfo=recording_start.tzinfo)
         sz = (sz_time - recording_start).total_seconds()
 
+    annotation['onset_s'] = sz
     offset = annotation.get('offset_s', None)
     duration = raw.n_times / raw.info['sfreq']
     if not 0 < sz < duration:
@@ -385,7 +386,7 @@ def resting_state(raw, source, output_dir, options):
 def ictal(raw, source, output_dir, options, bp_args):
     sz_data = _ictal_preictal_split(raw, source, options.preictal_s)
     annotation = sz_data['annotation']
-    soz = _resolve_soz(annotation['soz'], bp_args, raw.ch_names)
+    soz = _resolve_soz(annotation.get('soz', []), bp_args, raw.ch_names)
     if not options.skip_recruitment and not soz:
         raise ValueError(f'{source}: no SOZ labels. Supply them or use --skip_recruitment.')
     metadata = {'source_file': str(source), 'annotation': annotation, 'bipolar_soz': soz,
@@ -398,11 +399,11 @@ def ictal(raw, source, output_dir, options, bp_args):
             metadata['states'][state] = {'status': 'insufficient_duration', 'bounds_s': [start, stop]}
             continue
         metadata['states'][state] = _analyze_state(segment, state, source, output_dir, options,
-                                                  start_s=start, onset_s=annotation['onset_s'])
+                                                  start_s=start, onset_s=annotation.get('onset_s', None))
     if not options.skip_recruitment:
-        onset = annotation['onset_s']
+        onset = annotation.get('onset_s', None)
         end = min(raw.n_times / raw.info['sfreq'],
-                  annotation['offset_s'] if annotation['offset_s'] is not None else np.inf,
+                  annotation.get('offset_s', None) if annotation.get('offset_s', None) is not None else np.inf,
                   onset + options.recruitment_duration if options.recruitment_duration else np.inf)
         baseline = sz_data['bounds']['preictal']
         # Give the detector the continuous signal, not the onset-cropped ictal array.
@@ -459,7 +460,7 @@ def run(options):
         elif definitions != pair_definitions:
             raise ValueError(f'{path}: bipolar channel sets or endpoint polarity differ across files.')
         if not is_interictal:
-            soz = _resolve_soz(annotation['soz'], pairs, canonical)
+            soz = _resolve_soz(annotation.get('soz', []), pairs, canonical)
             if not options.skip_recruitment and not soz:
                 raise ValueError(f'{path}: missing SOZ labels; use --skip_recruitment to omit detection.')
         if max(options.ap_range) >= probe.info['sfreq'] / 2:
