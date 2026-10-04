@@ -55,6 +55,8 @@ from fooof import FOOOF
 from pathlib import Path
 from helper_methods import getBipolarChannels
 from sz_spread import detect_recruitment
+import os
+import tempfile
 
 UTILITY_FREQ = 60  # all recordings in the US, 60hz utility
 METRICS = ['plv', 'wpli'] #'dpli', 'wpli2_debiased', ]# 'dpli']
@@ -79,6 +81,12 @@ FREQ_BANDS = {
 
 T_EARLY_ICTAL_END = 10 #sec
 T_LATE_ICTAL_END = 30 #sec
+
+N_JOBS = int(os.environ.get('SLURM_CPUS_PER_TASK', '4'))
+
+# Use job-local temporary storage for sharing arrays between workers.
+os.environ['MNE_CACHE_DIR'] = tempfile.mkdtemp(prefix='mne_')
+os.environ['MNE_MEMMAP_MIN_SIZE'] = '10M'
 
 ### ======================= DO NOT EDIT BELOW THIS LINE ======================= ###
 
@@ -231,7 +239,7 @@ def _event_based_connectivity(signal, fs=None, n_cycles=4.0, bands=None, mode='m
             raise ValueError(f'{band}: window is too short for {n_cycles:g} cycles at {limits[0]} Hz.')
         freqs = np.geomspace(*limits, num=10)
         kwargs = dict(freqs=freqs, indices=pairs, sfreq=fs, mode=mode,
-                      fmin=limits[0], fmax=limits[1], n_cycles=n_cycles, average=True, n_jobs=1)
+                      fmin=limits[0], fmax=limits[1], n_cycles=n_cycles, average=True, n_jobs=N_JOBS)
         con = spectral_connectivity_time(signal, method=METRICS, faverage=True, **kwargs)
         eff = phase_slope_index_time(signal, **kwargs)
         results_cache[band] = {}
