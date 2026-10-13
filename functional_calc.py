@@ -60,6 +60,7 @@ import os
 import tempfile
 import warnings
 warnings.filterwarnings("ignore")
+mne.set_log_level("ERROR")   # Suppress MNE info and warning logs
 
 UTILITY_FREQ = 60  # all recordings in the US, 60hz utility
 METRICS = ['plv', 'wpli'] #'dpli', 'wpli2_debiased', ]# 'dpli']

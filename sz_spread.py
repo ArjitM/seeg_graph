@@ -227,7 +227,7 @@ def detect_recruitment(data: np.ndarray, ch_names: Sequence[str], fs: float, soz
     missing_soz = soz.difference(ch_names)
     if missing_soz:
         print(missing_soz)
-        raise ValueError(f"SOZ channels not present in data: {sorted(missing_soz)}")
+        raise ValueError(f"SOZ channels not present in data: {sorted(missing_soz)} \nChannel names: {ch_names}")
 
     if isinstance(measure, str):
         if measure not in BANDS:
