@@ -37,6 +37,7 @@ __version__ = "2026-Oct-3"
 
 import warnings
 import datetime
+from multiprocessing import get_context
 import numpy as np
 import mne
 import pandas as pd
@@ -82,7 +83,8 @@ FREQ_BANDS = {
 T_EARLY_ICTAL_END = 10 #sec
 T_LATE_ICTAL_END = 30 #sec
 
-N_JOBS = int(os.environ.get('SLURM_CPUS_PER_TASK', '4'))
+N_JOBS = 1  # for MNE
+N_PARALLEL = int(os.environ.get('SLURM_CPUS_PER_TASK', '1'))  # files in parallel
 
 # Use job-local temporary storage for sharing arrays between workers.
 os.environ['MNE_CACHE_DIR'] = tempfile.mkdtemp(prefix='mne_')
@@ -102,6 +104,8 @@ def make_bipolar(raw: mne.io.BaseRaw, exclude_pairs):
 
 
 def _preprocess_to_bipolar(raw, exclude_pairs, skip_ica=False):
+    non_electro = {'spo2', 'etco2', 'pulse', 'co2wave'}
+    raw.drop_channels([c for c in raw.ch_names if np.any([ne in c.lower() for ne in non_electro])])
     raw.set_channel_types({c: 'ecg' if ('ecg' in c.lower() or 'ekg' in c.lower()) else 'eeg'
                            for c in raw.ch_names})
     raw.filter(l_freq=0.5, h_freq=None, picks='eeg')
@@ -154,7 +158,7 @@ def _read_annotations(sig_file):
     return {'onset_s': number('sz_onset_time_s'),
             'onset_datetime': annotations.get('sz_onset_datetime', None),
             # 'offset_s': number('sz_offset_time_s'),
-            'soz': soz,
+            'soz': [ss.upper() for ss in soz],
             'bad_channels': annotations.get('bad_channels', list()),}
 
 
@@ -260,9 +264,11 @@ def _inter_event_connectivity(signals: np.ndarray, fs, bands=None):
         limits = FREQ_BANDS[band]
         con = spectral_connectivity_epochs(signals, mode='multitaper', method=METRICS_INTER,
                                            indices=pairs, sfreq=fs, fmin=limits[0],
-                                           fmax=limits[1], faverage=True)
+                                           fmax=limits[1], faverage=True,
+                                           n_jobs=N_PARALLEL)
         eff = phase_slope_index(signals, indices=pairs, fmin=limits[0], fmax=limits[1],
-                                sfreq=fs, mode='multitaper')
+                                sfreq=fs, mode='multitaper',
+                                n_jobs=N_PARALLEL)
         results_cache[band] = {}
         for method, result in zip([*METRICS_INTER, 'psi'], [*con, eff]):
             values = result.get_data().reshape(len(pairs[0]), -1)[:, 0]
@@ -414,18 +420,57 @@ def ictal(raw, source, output_dir, options, bp_args):
                   annotation.get('offset_s', None) if annotation.get('offset_s', None) is not None else np.inf,
                   onset + options.recruitment_duration if options.recruitment_duration else np.inf)
         baseline = sz_data['bounds']['preictal']
-        # Give the detector the continuous signal, not the onset-cropped ictal array.
-        result = detect_recruitment(raw.get_data(), raw.ch_names, raw.info['sfreq'], soz,
-                                    measure=options.recruitment_band, baseline_s=baseline,
-                                    onset_s=onset, search_end_s=end)
-        result.insert(0, 'recording', Path(source).stem)
-        result.insert(0, 'patient_id', options.patient_id)
-        result.to_csv(output_dir / f'{Path(source).stem}_recruitment.csv', index=False)
+
+        results = []
+        for r_band in options.recruitment_bands:
+            # Give the detector the continuous signal, not the onset-cropped ictal array.
+            result = detect_recruitment(raw.get_data(), raw.ch_names, raw.info['sfreq'], soz,
+                                        measure=r_band, baseline_s=baseline,
+                                        onset_s=onset, search_end_s=end)
+            result.insert(0, 'recording', Path(source).stem)
+            result.insert(0, 'patient_id', options.patient_id)
+            results.append(result)
+
+        recruitment = pd.concat(results)
+        recruitment.to_csv(output_dir / f'{Path(source).stem}_recruitment.csv', index=False)
         metadata['recruitment'] = {'baseline_s': baseline, 'search_end_s': end,
-                                  'reference': 'annotated_onset', 'measure': options.recruitment_band,
+                                  'reference': 'annotated_onset', 'measure': options.recruitment_bands,
                                   'window_s': 1.0, 'step_s': 0.25, 'threshold_z': 3.0,
                                   'min_duration_s': 2.0, 'max_gap_s': 0.5}
     return metadata, sz_data['ictal']
+
+
+def _process_recording(path, is_interictal, options, output_dir, canonical, pair_definitions):
+    raw = mne.io.read_raw_edf(path, preload=True)
+    signal = None
+    try:
+        raw.drop_channels([ch for ch in options.bad_channels if ch in raw.ch_names])
+        annotation = _read_annotations(path)
+        raw_bipolar, _ = _preprocess_to_bipolar(
+            raw, annotation.get('bad_channels', None), options.skip_ica)
+        _align_channels(raw_bipolar, canonical)
+
+        if is_interictal:
+            metadata = resting_state(raw_bipolar, path, output_dir, options)
+        else:
+            metadata, signal = ictal(raw_bipolar, path, output_dir, options, {
+                'ch_name': canonical,
+                'anode': [pair_definitions[ch][0] for ch in canonical],
+                'cathode': [pair_definitions[ch][1] for ch in canonical]})
+
+        metadata['preprocessing'] = {
+            'highpass_hz': 0.5, 'notch_hz': UTILITY_FREQ,
+            'skip_ica_requested': options.skip_ica,
+            'ecg_present': 'ecg' in raw.get_channel_types(),
+            'bad_channels_requested': options.bad_channels}
+        with open(output_dir / f'{path.stem}_metadata.json', 'w') as ff:
+            json.dump(metadata, ff, indent=2)
+
+        if options.prototype and not is_interictal:
+            return signal, str(path)
+        return None
+    finally:
+        raw.close()
 
 
 def run(options):
@@ -466,7 +511,11 @@ def run(options):
         if canonical is None:
             canonical, pair_definitions = list(pairs['ch_name']), definitions
         elif definitions != pair_definitions:
-            raise ValueError(f'{path}: bipolar channel sets or endpoint polarity differ across files.')
+            extra = set(definitions.keys()) - set(pair_definitions.keys())
+            if set(pair_definitions.keys()) - set(definitions.keys()):
+                raise ValueError(f'{path}: bipolar channel sets or endpoint polarity differ across files.')
+            else:
+                pairs = {k: v for k, v in pairs.items() if k not in extra}
         if not is_interictal:
             soz = _resolve_soz(annotation.get('soz', []), pairs, canonical)
             if not options.skip_recruitment and not soz:
@@ -477,32 +526,19 @@ def run(options):
             raise ValueError(f'{path}: select connectivity bands below Nyquist.')
         probe.close()
 
-    signals, seizure_sources = [], []
-    for path, is_interictal in jobs:
-        raw = mne.io.read_raw_edf(path, preload=True)
-        raw.drop_channels([ch for ch in options.bad_channels if ch in raw.ch_names])
-        annotation = _read_annotations(path)
-        raw_bipolar, _ = _preprocess_to_bipolar(raw, annotation.get('bad_channels'), options.skip_ica)
-        _align_channels(raw_bipolar, canonical)
-        if is_interictal:
-            metadata = resting_state(raw_bipolar, path, output_dir, options)
-        else:
-            metadata, signal = ictal(raw_bipolar, path, output_dir, options, {
-                'ch_name': canonical, 'anode': [pair_definitions[ch][0] for ch in canonical],
-                'cathode': [pair_definitions[ch][1] for ch in canonical]})
-            if options.prototype:
-                signals.append(signal)
-                seizure_sources.append(str(path))
-        metadata['preprocessing'] = {'highpass_hz': 0.5, 'notch_hz': UTILITY_FREQ,
-                                     'skip_ica_requested': options.skip_ica,
-                                     'ecg_present': 'ecg' in raw.get_channel_types(),
-                                     'bad_channels_requested': options.bad_channels}
-        with open(output_dir / f'{path.stem}_metadata.json', 'w') as ff:
-            json.dump(metadata, ff, indent=2)
-        raw.close()
+    n_workers = min(len(jobs), N_PARALLEL)
+    worker_args = [
+        (path, is_interictal, options, output_dir, canonical, pair_definitions)
+        for path, is_interictal in jobs
+    ]
+
+    with get_context('spawn').Pool(processes=n_workers) as pool:
+        results = pool.starmap(_process_recording, worker_args)
+
     if options.prototype:
-        time_locked_events(signals, output_dir, source.stem.split('seizure')[0],
-                           options.bands, seizure_sources)
+        signals, seizure_sources = zip(*[result for result in results if result is not None])
+        time_locked_events(list(signals), output_dir, source.stem.split('seizure')[0],
+                           options.bands, list(seizure_sources))
 
 
 def _parse_args():
@@ -521,7 +557,7 @@ def _parse_args():
     parser.add_argument('--n_cycles', type=float, default=4.0)
     parser.add_argument('--bands', nargs='+', choices=list(FREQ_BANDS), default=list(FREQ_BANDS))
     parser.add_argument('--ap_range', type=float, nargs=2, default=[5.0, 55.0])
-    parser.add_argument('--recruitment_band', default='beta', choices=list(FREQ_BANDS))
+    parser.add_argument('--recruitment_bands', nargs='+', default=['beta'], choices=list(FREQ_BANDS))
     parser.add_argument('--recruitment_duration', type=float, default=30.0,
                         help='Seconds after onset; 0 uses seizure offset or EDF end.')
     parser.add_argument('--skip_recruitment', action='store_true')

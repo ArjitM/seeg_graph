@@ -250,11 +250,34 @@ def compute_connectivity(
     # Add intermediate points so streamline segments do not skip small ROIs.
     dense_streamlines_gen = subsegment(tract_file.tractogram.streamlines, max_segment_length=max_segment_mm)
 
-    padded_labels, padded_affine = pad_inferior_z(
-        label_volume,
-        affine,
-        pad_voxels=16,
-    )
+    # padded_labels, padded_affine = pad_inferior_z(
+    #     label_volume,
+    #     affine,
+    #     pad_voxels=16,
+    # )
+
+    inv_affine = np.linalg.inv(affine)
+
+    min_vox = np.full(3, np.inf)
+    max_vox = np.full(3, -np.inf)
+
+    for sl in tract_file.tractogram.streamlines:
+        vox = apply_affine(inv_affine, sl)
+        min_vox = np.minimum(min_vox, vox.min(axis=0))
+        max_vox = np.maximum(max_vox, vox.max(axis=0))
+
+    print("Image shape:", label_volume.shape)
+    print("Minimum streamline voxel:", min_vox)
+    print("Maximum streamline voxel:", max_vox)
+
+    shape = np.asarray(label_volume.shape)
+    pad_before = np.maximum(0, np.ceil(-min_vox).astype(int) + 1)
+    pad_after = np.maximum(0, np.ceil(max_vox - (shape - 1)).astype(int) + 1)
+
+    padding = tuple(zip(pad_before, pad_after))
+    padded_labels = np.pad(label_volume, padding)
+    padded_affine = affine.copy()
+    padded_affine[:3, 3] -= affine[:3, :3] @ pad_before
 
     counts2D, edge_map = connectivity_matrix(dense_streamlines_gen,
                                              affine=padded_affine,
