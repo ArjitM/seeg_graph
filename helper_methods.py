@@ -4,7 +4,7 @@ from nibabel.affines import apply_affine
 from collections.abc import Iterable
 
 
-def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs: Iterable[str] | None=None):
+def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs: Iterable[str] | None=None, native_leads=True):
     """
     Return bipolar channels from a list of channels, named as LeadNum format.
     :param channels: all channels, can be multiple electrodes
@@ -82,8 +82,14 @@ def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs: I
         to_use = [contacts[ii] for ii in contig_locations
                   if contacts[ii] not in exclude_contacts_by_lead.get(lead, list())]
 
-        bp_args['anode'] += [ch_name_by_contact.get(f'{lead}{c}') for c in to_use]
-        bp_args['cathode'] += [ch_name_by_contact.get(f'{lead}{c + 1}') for c in to_use]
+        if native_leads:
+            bp_args['anode'] += [ch_name_by_contact.get(f'{lead}{c}') for c in to_use]
+            bp_args['cathode'] += [ch_name_by_contact.get(f'{lead}{c + 1}') for c in to_use]
+
+        else:
+            bp_args['anode'] += [f'{lead}{c}' for c in to_use]
+            bp_args['cathode'] += [f'{lead}{c + 1}' for c in to_use]
+
         bp_args['ch_name'] += [f'{lead}{c}-{c + 1}' for c in to_use]
 
     return bp_args

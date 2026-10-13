@@ -421,7 +421,7 @@ def resting_state(raw, source, output_dir, options):
 def ictal(raw, source, output_dir, options, bp_args):
     sz_data = _ictal_preictal_split(raw, source, options.preictal_s)
     annotation = sz_data['annotation']
-    soz = annotation.get('soz', []) #_resolve_soz(annotation.get('soz', []), bp_args, raw.ch_names)
+    soz = _resolve_soz(annotation.get('soz', []), bp_args, raw.ch_names)
     if not options.skip_recruitment and not soz:
         raise ValueError(f'{source}: no SOZ labels. Supply them or use --skip_recruitment.')
     metadata = {'source_file': str(source), 'annotation': annotation, 'bipolar_soz': soz,
@@ -532,7 +532,7 @@ def run(options):
         names = [ch for ch in probe.ch_names if 'ecg' not in ch.lower() and 'ekg' not in ch.lower() and not is_non_ieeg(ch)]
 
         annotation = _read_annotations(path)
-        pairs = getBipolarChannels(names, exclude_pairs=annotation.get('bad_channels'))
+        pairs = getBipolarChannels(names, exclude_pairs=annotation.get('bad_channels'), native_leads=False)
         definitions = dict(zip(pairs['ch_name'], zip(pairs['anode'], pairs['cathode'])))
 
         if canonical is None:
@@ -546,7 +546,7 @@ def run(options):
                 pairs = {k: v for k, v in pairs.items() if k not in extra}
 
         if not is_interictal:
-            soz = annotation.get('soz', []) #_resolve_soz(annotation.get('soz', []), pairs, canonical)
+            soz = _resolve_soz(annotation.get('soz', []), pairs, canonical)
             if not options.skip_recruitment and not soz:
                 raise ValueError(f'{path}: missing SOZ labels; use --skip_recruitment to omit detection.')
         if max(options.ap_range) >= probe.info['sfreq'] / 2:
