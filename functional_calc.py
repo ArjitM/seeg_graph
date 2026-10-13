@@ -492,6 +492,7 @@ def _process_recording(path, is_interictal, options, output_dir, canonical, pair
 
 
 def run(options):
+
     source = Path(options.input_file).expanduser()
     output_dir = Path(options.output_dir).expanduser() if options.output_dir else source.parent
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -504,16 +505,19 @@ def run(options):
         pattern = re.compile(re.escape(prefix) + r'seizure.*', re.I)
         files = sorted(p for p in source.parent.iterdir()
                        if p.suffix.lower() == '.edf' and pattern.fullmatch(p.stem))
+
     files += [Path(p).expanduser() for p in options.seizure_files]
     files = list(dict.fromkeys(p.resolve() for p in files))
     if len({p.stem for p in files}) != len(files):
         raise ValueError('Duplicate EDF stems would overwrite outputs; run these separately.')
     jobs = [(p, options.resting_state) for p in files]
+
     if options.interictal_file:
         interictal = Path(options.interictal_file).expanduser().resolve()
         if interictal in files or interictal.stem in {p.stem for p in files}:
             raise ValueError('Interictal EDF must be separate and have a distinct filename stem.')
         jobs.append((interictal, True))
+
     # Read-only preflight before expensive ICA/connectivity.
     canonical = None
     pair_definitions = None
@@ -522,10 +526,12 @@ def run(options):
             raise ValueError(f'EDF not found: {path}')
         probe = mne.io.read_raw_edf(path, preload=False)
         probe.drop_channels([ch for ch in options.bad_channels if ch in probe.ch_names])
-        names = [ch for ch in probe.ch_names if 'ecg' not in ch.lower() and 'ekg' not in ch.lower()]
+        names = [ch for ch in probe.ch_names if 'ecg' not in ch.lower() and 'ekg' not in ch.lower() and not is_non_ieeg(ch)]
+
         annotation = _read_annotations(path)
         pairs = getBipolarChannels(names, exclude_pairs=annotation.get('bad_channels'))
         definitions = dict(zip(pairs['ch_name'], zip(pairs['anode'], pairs['cathode'])))
+
         if canonical is None:
             canonical, pair_definitions = list(pairs['ch_name']), definitions
         elif definitions != pair_definitions:
@@ -534,6 +540,7 @@ def run(options):
                 raise ValueError(f'{path}: bipolar channel sets or endpoint polarity differ across files.')
             else:
                 pairs = {k: v for k, v in pairs.items() if k not in extra}
+
         if not is_interictal:
             soz = _resolve_soz(annotation.get('soz', []), pairs, canonical)
             if not options.skip_recruitment and not soz:
