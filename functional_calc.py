@@ -33,9 +33,10 @@ numpy, scipy, pandas, helper_methods.py, and sz_spread.py.
 """
 __author__ = "Arjit Misra"
 __email__ = ["arjitm@uchicago.edu", "arjitm2@illinois.edu"]
-__version__ = "2026-Oct-3"
+__version__ = "2026-Oct-13"
 
 import warnings
+warnings.filterwarnings("ignore")
 import datetime
 from multiprocessing import get_context
 import numpy as np
@@ -58,8 +59,6 @@ from helper_methods import getBipolarChannels
 from sz_spread import detect_recruitment
 import os
 import tempfile
-import warnings
-warnings.filterwarnings("ignore")
 mne.set_log_level("ERROR")   # Suppress MNE info and warning logs
 
 UTILITY_FREQ = 60  # all recordings in the US, 60hz utility
@@ -209,9 +208,11 @@ def _ictal_preictal_split(raw, sig_file, preictal_s=30.0):
     offset = annotation.get('offset_s', None)
     duration = raw.n_times / raw.info['sfreq']
     if not 0 < sz < duration:
-        raise ValueError('Seizure onset must be inside the EDF with preictal data available.')
+        raise ValueError(f'Seizure onset must be inside the EDF with preictal data available. \n'
+                         f'Provided onset: {sz}; duration: {duration}')
     if offset is not None and not sz < offset <= duration:
-        raise ValueError('Seizure offset must follow onset and lie within the EDF.')
+        raise ValueError(f'Seizure offset must follow onset and lie within the EDF. \n'
+                         f'Provided offset: {offset}; onset: {sz}; duration: {duration}')
     end = min(duration, offset if offset is not None else duration, sz + T_LATE_ICTAL_END)
     bounds = {'preictal': (max(0.0, sz - preictal_s), sz),
               'early_ictal': (sz, min(sz + T_EARLY_ICTAL_END, end)),
@@ -607,7 +608,11 @@ def _parse_args():
 
 
 if __name__ == '__main__':
+    import time
+    t1 = time.time()
     run(_parse_args())
+    t2 = time.time()
+    print("Time elapsed >>>> ", t2 - t1)
 
 '''
 python functional_calc.py "/Users/arjit/Documents/_Lab/thalamic_stim/UChicago_SEEG_Data/electrophys/Seizure & Resting-State Data/iEEG001_SZ_1.EDF" \
