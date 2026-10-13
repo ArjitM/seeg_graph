@@ -58,6 +58,8 @@ from helper_methods import getBipolarChannels
 from sz_spread import detect_recruitment
 import os
 import tempfile
+import warnings
+warnings.filterwarnings("ignore")
 
 UTILITY_FREQ = 60  # all recordings in the US, 60hz utility
 METRICS = ['plv', 'wpli'] #'dpli', 'wpli2_debiased', ]# 'dpli']
@@ -95,9 +97,9 @@ NON_IEEG = re.compile(
     r"[A-Z]\d+"                              # A1, C3, E128, etc.
     r"|(?:FP|AF|FT|FC|CP|TP|PO)\d+"         # Scalp 10-10 electrodes
     r"|(?:FP|AF|F|FC|C|CP|P|PO|O)Z"        # Midline electrodes
-    r"|(?:EOG|HEOG|VEOG|EMG)\d*"
-    r"|(?:REF|GND|GROUND|CMS|DRL|AVG)"
-    r"|(?:RESP|SPO2|PLETH|PULSE|ETCO2|CO2WAVE|CO2)\d*"
+    r"|(?:EOG|HEOG|VEOG|EMG|DC)\d*"
+    r"|(?:REF|GND|GROUND|CMS|DRL|AVG|PR|TRIG)"
+    r"|(?:RESP|SPO2|PLETH|PULSE|ETCO2|CO2WAVE|CO2|OSAT)\d*"
     r"|(?:LM|RM|LMA|RMA|LE|RE|MASTOID)\d*"
     r")$",
     re.IGNORECASE
@@ -537,6 +539,7 @@ def run(options):
         elif definitions != pair_definitions:
             extra = set(definitions.keys()) - set(pair_definitions.keys())
             if set(pair_definitions.keys()) - set(definitions.keys()):
+                print(set(pair_definitions.keys()) - set(definitions.keys()))
                 raise ValueError(f'{path}: bipolar channel sets or endpoint polarity differ across files.')
             else:
                 pairs = {k: v for k, v in pairs.items() if k not in extra}
