@@ -14,7 +14,12 @@ def getBipolarChannels(channels: list[str], allow_missing=True, exclude_pairs: I
     """
 
     # can handle space or no space prior to contact name, but expects LEAD<CONTACT_NUM> format
-    c_id = [(c, c.split(' ')[-1]) for c in channels]
+    c_id = [
+        (c,
+         c.split('-')[0].replace("EEG", '').replace("POL", '').replace(" ", ''))
+        for c in channels
+    ]  # removes POL, EEG, etc and ignores reference channel if already bipolar.
+    # Note that all channels should have identical reference, then A-ref - B-ref = A-B.
 
     ch_names, contacts = zip(*c_id)
     ch_name_by_contact = dict({*zip(contacts, ch_names)})
