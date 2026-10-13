@@ -90,8 +90,25 @@ N_PARALLEL = int(os.environ.get('SLURM_CPUS_PER_TASK', '1'))  # files in paralle
 os.environ['MNE_CACHE_DIR'] = tempfile.mkdtemp(prefix='mne_')
 os.environ['MNE_MEMMAP_MIN_SIZE'] = '10M'
 
+NON_IEEG = re.compile(
+    r"^(?:"
+    r"[A-Z]\d+"                              # A1, C3, E128, etc.
+    r"|(?:FP|AF|FT|FC|CP|TP|PO)\d+"         # Scalp 10-10 electrodes
+    r"|(?:FP|AF|F|FC|C|CP|P|PO|O)Z"        # Midline electrodes
+    r"|(?:EOG|HEOG|VEOG|EMG)\d*"
+    r"|(?:REF|GND|GROUND|CMS|DRL|AVG)"
+    r"|(?:RESP|SPO2|PLETH|PULSE|ETCO2|CO2WAVE|CO2)\d*"
+    r"|(?:LM|RM|LMA|RMA|LE|RE|MASTOID)\d*"
+    r")$",
+    re.IGNORECASE
+)
+
 ### ======================= DO NOT EDIT BELOW THIS LINE ======================= ###
 
+def is_non_ieeg(ch):
+    ch = re.sub(r"^(EEG|POL)\s+", "", ch.strip(), flags=re.I)
+    ch = re.sub(r"-(?:REF|AVG)$", "", ch, flags=re.I)
+    return bool(NON_IEEG.fullmatch(ch))
 
 def make_bipolar(raw: mne.io.BaseRaw, exclude_pairs):
     bp_args = getBipolarChannels(raw.copy().pick(picks='eeg').ch_names, exclude_pairs=exclude_pairs)
@@ -104,8 +121,9 @@ def make_bipolar(raw: mne.io.BaseRaw, exclude_pairs):
 
 
 def _preprocess_to_bipolar(raw, exclude_pairs, skip_ica=False):
-    non_electro = {'spo2', 'etco2', 'pulse', 'co2wave'}
-    raw.drop_channels([c for c in raw.ch_names if np.any([ne in c.lower() for ne in non_electro])])
+    exclude = [ch for ch in raw.ch_names if is_non_ieeg(ch)]
+    print("Excluded:", exclude)
+    raw.drop_channels(exclude)
     raw.set_channel_types({c: 'ecg' if ('ecg' in c.lower() or 'ekg' in c.lower()) else 'eeg'
                            for c in raw.ch_names})
     raw.filter(l_freq=0.5, h_freq=None, picks='eeg')
