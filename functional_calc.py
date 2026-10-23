@@ -33,7 +33,7 @@ numpy, scipy, pandas, helper_methods.py, and sz_spread.py.
 """
 __author__ = "Arjit Misra"
 __email__ = ["arjitm@uchicago.edu", "arjitm2@illinois.edu"]
-__version__ = "2026-Oct-13"
+__version__ = "2026-Oct-23"
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -56,7 +56,8 @@ import gzip
 from fooof import FOOOF
 from pathlib import Path
 from helper_methods import getBipolarChannels
-from sz_spread import detect_recruitment
+# from sz_spread import detect_recruitment
+from salami_recruitment import detect_recruitment, save_recruitment
 import os
 import tempfile
 mne.set_log_level("ERROR")   # Suppress MNE info and warning logs
@@ -447,18 +448,27 @@ def ictal(raw, source, output_dir, options, bp_args):
                   onset + options.recruitment_duration if options.recruitment_duration else np.inf)
         baseline = sz_data['bounds']['preictal']
 
-        results = []
-        for r_band in options.recruitment_bands:
-            # Give the detector the continuous signal, not the onset-cropped ictal array.
-            result = detect_recruitment(raw.get_data(), raw.ch_names, raw.info['sfreq'], soz,
-                                        measure=r_band, baseline_s=baseline,
-                                        onset_s=onset, search_end_s=end)
-            result.insert(0, 'recording', Path(source).stem)
-            result.insert(0, 'patient_id', options.patient_id)
-            results.append(result)
+        # results = []
+        # for r_band in options.recruitment_bands:
+        #     # Give the detector the continuous signal, not the onset-cropped ictal array.
+        #     result = detect_recruitment(raw.get_data(), raw.ch_names, raw.info['sfreq'], soz,
+        #                                 measure=r_band, baseline_s=baseline,
+        #                                 onset_s=onset, search_end_s=end)
+        #     result.insert(0, 'recording', Path(source).stem)
+        #     result.insert(0, 'patient_id', options.patient_id)
+        #     results.append(result)
+        # recruitment = pd.concat(results)
 
-        recruitment = pd.concat(results)
-        recruitment.to_csv(output_dir / f'{Path(source).stem}_recruitment.csv', index=False)
+        result = detect_recruitment(
+            raw,
+            onset_s=onset,
+            picks=None,  # All retained channels except those in info["bads"].
+            threshold=2.0,  # Strictly greater than two baseline SDs.
+            consecutive=3,  # Three uninterrupted 1-second windows.
+            min_measures=2,  # At least two of the seven detectors must trigger.
+        )
+        save_recruitment(result, f'{output_dir}/{Path(source).stem}')
+        # recruitment.to_csv(output_dir / f'{Path(source).stem}_recruitment.csv', index=False)
         metadata['recruitment'] = {'baseline_s': baseline, 'search_end_s': end,
                                   'reference': 'annotated_onset', 'measure': options.recruitment_bands,
                                   'window_s': 1.0, 'step_s': 0.25, 'threshold_z': 3.0,
