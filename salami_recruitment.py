@@ -335,8 +335,8 @@ def save_recruitment(result, output_stem):
     """
     stem = Path(output_stem)
     stem.parent.mkdir(parents=True, exist_ok=True)
-    csv_path = stem.with_name(stem.name + "_recruitment.csv")
-    npz_path = stem.with_name(stem.name + "_recruit_details.npz")
+    csv_path = stem.with_name(stem.name + "_recruitment_7feat.csv")
+    npz_path = stem.with_name(stem.name + "_recruit_7feat_details.npz")
     rows = result["summary"]
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
