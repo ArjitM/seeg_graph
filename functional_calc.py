@@ -61,6 +61,7 @@ from salami_recruitment import detect_recruitment, save_recruitment
 import os
 import tempfile
 mne.set_log_level("ERROR")   # Suppress MNE info and warning logs
+import time
 
 UTILITY_FREQ = 60  # all recordings in the US, 60hz utility
 METRICS = ['plv', 'wpli'] #'dpli', 'wpli2_debiased', ]# 'dpli']
@@ -469,10 +470,14 @@ def ictal(raw, source, output_dir, options, bp_args):
         )
         save_recruitment(result, f'{output_dir}/{Path(source).stem}')
         # recruitment.to_csv(output_dir / f'{Path(source).stem}_recruitment.csv', index=False)
+        # metadata['recruitment'] = {'baseline_s': baseline, 'search_end_s': end,
+        #                           'reference': 'annotated_onset', 'measure': options.recruitment_bands,
+        #                           'window_s': 1.0, 'step_s': 0.25, 'threshold_z': 3.0,
+        #                           'min_duration_s': 2.0, 'max_gap_s': 0.5}
         metadata['recruitment'] = {'baseline_s': baseline, 'search_end_s': end,
-                                  'reference': 'annotated_onset', 'measure': options.recruitment_bands,
-                                  'window_s': 1.0, 'step_s': 0.25, 'threshold_z': 3.0,
-                                  'min_duration_s': 2.0, 'max_gap_s': 0.5}
+                                  'reference': 'annotated_onset', 'measure': 'See Salami et al',
+                                  'window_s': 1.0, 'threshold_z': 2.0,
+                                  'min_duration_s': 3.0}
     return metadata, sz_data['ictal']
 
 
@@ -633,7 +638,6 @@ def _parse_args():
 
 
 if __name__ == '__main__':
-    import time
     t1 = time.time()
     run(_parse_args())
     t2 = time.time()
