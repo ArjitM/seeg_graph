@@ -56,7 +56,7 @@ def matToGraph(matrix2d, node_labels: npt.ArrayLike, node_val_dict=None, directe
         weights = [matrix2d[ii] for ii in inds]
         node_pairs = [(node_labels[i], node_labels[j]) for (i, j) in inds]
 
-        G.add_weighted_edges_from(zip(*zip(node_pairs), weights))  #  < (node_1, node_2, weight) ... >
+        G.add_weighted_edges_from(zip(*zip(*node_pairs), weights))  #  < (node_1, node_2, weight) ... >
 
     if node_val_dict is not None:  # Optionally assign node attributes (may be multiple)
         for nl in node_labels:
@@ -120,16 +120,16 @@ def between_centrality(G: nx.Graph | nx.DiGraph, directed=False):
             return between_centrality(G_forward, directed=False), between_centrality(G_backward, directed=False)
 
 
-def roughness(G: nx.Graph, x: npt.ArrayLike, rayleigh=True, normalized=True):
+def roughness(G: nx.Graph, x: npt.ArrayLike, nodelist: npt.ArrayLike, rayleigh=True, normalized=True):
     x = np.array(x)
     if not normalized:
         # L = D - A
-        L = nx.laplacian_matrix(G).toarray()
+        L = nx.laplacian_matrix(G, nodelist).toarray()
         D = L.diagonal() * np.identity(L.shape[0])
         norm = x.T @ D @ x
     else:
         # L_norm = I - D^(-1/2) A D^(-1/2)
-        L = nx.normalized_laplacian_matrix(G).toarray()  # symmetrically normalized
+        L = nx.normalized_laplacian_matrix(G, nodelist).toarray()  # symmetrically normalized
         norm = x.T @ x
 
     quad_form = x.T @ L @ x

@@ -233,13 +233,17 @@ def _resolve_soz(soz, bp_args, ch_names):
     return [ch for ch in ch_names if ch in soz or any(endpoint in soz for endpoint in pairs[ch])]
 
 
-def _fixed_epochs(raw, window_s=10.0):
+def _fixed_epochs(raw, rand_sample, rand_seed, window_s=10.0):
     # Nonoverlapping, equally sized windows for every state. Drop trailing remainder.
+    # If rand_sample = TRUE, use randomly selected windows in triplicate.
     fs = raw.info['sfreq']
     n = int(round(window_s * fs))
     count = raw.n_times // n
     if count == 0:
         raise ValueError(f'Segment is shorter than one {window_s:g}-s window.')
+    if rand_sample:
+        window_nums = np.random.default_rng(seed=rand_seed).integers(1, count, size=min(count, 3))  # fix window len
+        return np.stack([raw.get_data(start=i * n, stop=(i + 1) * n) for i in sorted(window_nums)])
     return np.stack([raw.get_data(start=i * n, stop=(i + 1) * n) for i in range(count)])
 
 
@@ -386,8 +390,8 @@ def single_channel(epochs, fs, ch_names, ap_range=(5.0, 55.0)):
     return windows, summary
 
 
-def _analyze_state(raw, state, source, output_dir, options, start_s=0.0, onset_s=None):
-    epochs = _fixed_epochs(raw, options.window_s)
+def _analyze_state(raw, state, source, output_dir, options, start_s=0.0, onset_s=None, rand_sample=False):
+    epochs = _fixed_epochs(raw, rand_sample, options.random_seed, options.window_s)
     fs = raw.info['sfreq']
     metadata = {'source_file': str(source), 'patient_id': options.patient_id, 'state': state,
                 'ch_names': raw.ch_names, 'sfreq': fs, 'window_s': epochs.shape[-1] / fs,
@@ -416,7 +420,7 @@ def _analyze_state(raw, state, source, output_dir, options, start_s=0.0, onset_s
 
 def resting_state(raw, source, output_dir, options):
     # A separate interictal file uses the same estimator and window length as seizures.
-    return _analyze_state(raw, 'interictal', source, output_dir, options)
+    return _analyze_state(raw, 'interictal', source, output_dir, options, rand_sample=True)
 
 
 def ictal(raw, source, output_dir, options, bp_args):
@@ -497,30 +501,40 @@ def _process_recording(path, is_interictal, options, output_dir, canonical, pair
 
 def run(options):
 
-    source = Path(options.input_file).expanduser()
-    output_dir = Path(options.output_dir).expanduser() if options.output_dir else source.parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-    files = [source]
-    if options.batch_events:
-        match = re.search(r'seizure', source.stem, re.I)
-        if match is None:
-            raise ValueError('--batch_events needs a filename containing seizure; use --seizure_files otherwise.')
-        prefix = source.stem[:match.start()]
-        pattern = re.compile(re.escape(prefix) + r'seizure.*', re.I)
-        files = sorted(p for p in source.parent.iterdir()
-                       if p.suffix.lower() == '.edf' and pattern.fullmatch(p.stem))
+    source = None
+    if not options.resting_state:
+        source = Path(options.seizure_files[0]).expanduser()
+        output_dir = Path(options.output_dir).expanduser() if options.output_dir else source.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        files = []
+        if options.batch_events:
+            match = re.search(r'seizure', source.stem, re.I)
+            if match is None:
+                raise ValueError('--batch_events needs a filename containing seizure; use --seizure_files otherwise.')
+            prefix = source.stem[:match.start()]
+            pattern = re.compile(re.escape(prefix) + r'seizure.*', re.I)
+            files = sorted(p for p in source.parent.iterdir()
+                           if p.suffix.lower() == '.edf' and pattern.fullmatch(p.stem))
 
-    files += [Path(p).expanduser() for p in options.seizure_files]
-    files = list(dict.fromkeys(p.resolve() for p in files))
-    if len({p.stem for p in files}) != len(files):
-        raise ValueError('Duplicate EDF stems would overwrite outputs; run these separately.')
-    jobs = [(p, options.resting_state) for p in files]
+        files += [Path(p).expanduser() for p in options.seizure_files]
+        files = list(dict.fromkeys(p.resolve() for p in files))
+        if len({p.stem for p in files}) != len(files):
+            raise ValueError('Duplicate EDF stems would overwrite outputs; run these separately.')
+        jobs = [(p, options.resting_state) for p in files]
 
-    if options.interictal_file:
+        if options.interictal_file:
+            interictal = Path(options.interictal_file).expanduser().resolve()
+            if interictal in files or interictal.stem in {p.stem for p in files}:
+                raise ValueError('Interictal EDF must be separate and have a distinct filename stem.')
+            jobs.append((interictal, True))
+
+    else:
+        if not options.interictal_file:
+            raise ValueError('Interictal file needed for resting state.')
         interictal = Path(options.interictal_file).expanduser().resolve()
-        if interictal in files or interictal.stem in {p.stem for p in files}:
-            raise ValueError('Interictal EDF must be separate and have a distinct filename stem.')
-        jobs.append((interictal, True))
+        output_dir = Path(options.output_dir).expanduser() if options.output_dir else interictal.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        jobs =[(interictal, True)]
 
     # Read-only preflight before expensive ICA/connectivity.
     canonical = None
@@ -573,8 +587,8 @@ def run(options):
 
 def _parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('input_file')
-    parser.add_argument('--resting_state', action='store_true', help='Interictal-only EDF (legacy flag).')
+    # parser.add_argument('input_file')
+    parser.add_argument('--resting_state', action='store_true', help='Interictal-only EDF.')
     parser.add_argument('--interictal_file', help='Separate interictal EDF for this patient/implantation.')
     parser.add_argument('--seizure_files', nargs='*', default=[], help='Additional seizure EDFs for this patient.')
     parser.add_argument('--batch_events', action='store_true', help='Discover seizure EDFs with the same prefix.')
@@ -585,6 +599,7 @@ def _parse_args():
     parser.add_argument('--preictal_s', type=float, default=30.0)
     parser.add_argument('--window_s', type=float, default=10.0)
     parser.add_argument('--n_cycles', type=float, default=4.0)
+    parser.add_argument('--random_seed', type=int, default=22)
     parser.add_argument('--bands', nargs='+', choices=list(FREQ_BANDS), default=list(FREQ_BANDS))
     parser.add_argument('--ap_range', type=float, nargs=2, default=[5.0, 55.0])
     parser.add_argument('--recruitment_bands', nargs='+', default=['beta'], choices=list(FREQ_BANDS))
@@ -600,7 +615,7 @@ def _parse_args():
         parser.error('Invalid aperiodic range or recruitment duration.')
     if options.ap_range[0] < UTILITY_FREQ < options.ap_range[1]:
         warnings.warn('Aperiodic fit spans the 60-Hz notch; inspect fits carefully. Default is 5–55 Hz.')
-    if options.resting_state and (options.interictal_file or options.batch_events or options.seizure_files or options.prototype):
+    if options.resting_state and (options.batch_events or options.seizure_files or options.prototype):
         parser.error('--resting_state is interictal-only; do not combine it with seizure inputs.')
     if options.prototype and options.skip_connectivity:
         parser.error('--prototype conflicts with --skip_connectivity.')
@@ -623,3 +638,5 @@ python functional_calc.py "/Users/arjit/Documents/_Lab/thalamic_stim/UChicago_SE
   --patient_id iEEG001 \
   --output_dir "/Users/arjit/Documents/_Lab/thalamic_stim/UChicago_SEEG_Data/derivatives/iEEG001/seeg/"
 '''
+# --skip_connectivity
+# --skip_ica
